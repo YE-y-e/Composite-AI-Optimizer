@@ -1,0 +1,46 @@
+# ============================================================
+#  AI 力学 · 复合材料层合板刚度预测与优化  环境依赖
+#  Python 3.13.2  (Windows / Linux / Streamlit Cloud 均可)
+#  虚拟环境创建：python -m venv .venv
+#  安装命令（清华镜像）：
+#     .\.venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+#  说明：.venv\pip.ini 已把索引固定为清华镜像源
+# ============================================================
+
+# ---------------- 主要依赖 ----------------
+composipy==1.7.5        # 经典层合板理论（CLT）计算 ABD 矩阵
+pymoo==0.6.2            # 多目标优化 NSGA-II
+scikit-learn==1.9.1     # 随机森林代理模型
+matplotlib==3.11.2      # 绘图
+streamlit==1.66.0       # Web 交互界面（app.py）
+plotly==7.1.0           # 3D 屈曲波形 / 柱状对比图（app.py）
+
+# ---------------- 上述库的传递依赖 ----------------
+about-time==4.2.1
+alive-progress==3.3.0
+autograd==1.9.1
+cffi==2.1.1
+cloudpickle==3.1.2
+cma==4.5.0
+contourpy==1.4.0
+cycler==0.12.1
+Deprecated==3.0.0
+fonttools==4.67.0
+graphemeu==0.7.2
+joblib==1.6.0
+kiwisolver==1.5.1
+moocore==0.3.2
+narwhals==2.27.1
+numpy==2.5.4
+packaging==26.3
+pandas==3.0.6
+pillow==12.3.0
+platformdirs==4.13.3
+pycparser==3.11
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+scipy==1.18.1
+six==1.17.0
+threadpoolctl==3.7.0
+tzdata==2026.5
+wrapt==2.5.1
