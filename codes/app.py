@@ -21,10 +21,10 @@
     主区：① 推荐铺层与 Ncr  ② m = 1, n = 1 屈曲波形 3D 曲面  ③ 与纯 0° 的性能对比
 
 部署模式（自动检测）
-    Streamlit Community Cloud 的容器 HOME 通常为 /home/adminuser，应用会自动识别并
-    进入"云端极速演示"：跳过 GA，直接返回预设案例 / 纯 0° 估算，保证限流下秒开。
-    本地运行（Windows / macOS / 普通 Linux）自动进入"完整模式"，调用 Auto_Design.py
-    运行真实 NSGA-II 寻优。也可用环境变量 APP_MODE=demo|local 强制指定。
+    规则极简：Windows（os.name == "nt"）视为本地，跑真实 NSGA-II；
+    其他系统（Linux/macOS，Streamlit Cloud 为 Linux）默认视为云端演示，跳过 GA，
+    直接返回预设案例 / 纯 0° 估算，保证限流下秒开。
+    也可用环境变量 APP_MODE=demo|local 强制指定（优先级最高）。
 """
 
 import contextlib
@@ -45,14 +45,17 @@ from angle_optimize import (A_PLATE, B_PLATE, DENSITY, M_VERIFY, T_PLY,
 # 0. 环境自动检测：云端演示 or 本地完整计算
 # =============================================================================
 def _detect_cloud_demo() -> bool:
-    """自动判断是否运行在 Streamlit Community Cloud。
+    """极简、暴力的运行环境判断。
 
     判定顺序：
-        1. 环境变量 APP_MODE 显式覆盖（demo/cloud 或 local/full），便于本地调试；
-        2. Streamlit Cloud 容器的 HOME 通常为 /home/adminuser；
-        3. 兼容常见的云端环境变量（STREAMLIT_CLOUD / IS_STREAMLIT_CLOUD /
-           STREAMLIT_SHARING_MODE）。
-    本地运行（Windows / macOS / 普通 Linux）默认返回 False，跑真实 GA。
+        1. 环境变量 APP_MODE 优先：demo/cloud/1/true/yes → 演示；
+           local/full/0/false/no → 本地；
+        2. Windows（os.name == "nt"）一定是本地，跑真实 GA；
+        3. 其他系统（Linux / macOS，Streamlit Cloud 为 Linux）默认按云端演示处理。
+
+    这样不再依赖 HOME、STREAMLIT_CLOUD 等容易被平台改掉的变量：
+    云端 Linux 必然走演示，Windows 本地必然走真实计算；
+    macOS 本地若要跑 GA，显式设置 APP_MODE=local 即可。
     """
     mode = os.environ.get("APP_MODE", "").strip().lower()
     if mode in {"demo", "cloud", "1", "true", "yes"}:
@@ -60,14 +63,9 @@ def _detect_cloud_demo() -> bool:
     if mode in {"local", "full", "0", "false", "no"}:
         return False
 
-    if os.environ.get("HOME", "").rstrip("/") == "/home/adminuser":
-        return True
-
-    for key in ("STREAMLIT_CLOUD", "IS_STREAMLIT_CLOUD", "STREAMLIT_SHARING_MODE"):
-        value = os.environ.get(key, "").strip().lower()
-        if value in {"1", "true", "yes", "cloud", "streamlit"}:
-            return True
-    return False
+    if os.name == "nt":
+        return False
+    return True
 
 
 IS_CLOUD_DEMO = _detect_cloud_demo()
