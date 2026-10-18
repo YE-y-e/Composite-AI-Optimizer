@@ -19,9 +19,16 @@
 界面
     左侧：Nx、Ny、SF 滑块 + 「开始优化」按钮
     主区：① 推荐铺层与 Ncr  ② m = 1, n = 1 屈曲波形 3D 曲面  ③ 与纯 0° 的性能对比
+
+部署模式（自动检测）
+    Streamlit Community Cloud 的容器 HOME 通常为 /home/adminuser，应用会自动识别并
+    进入"云端极速演示"：跳过 GA，直接返回预设案例 / 纯 0° 估算，保证限流下秒开。
+    本地运行（Windows / macOS / 普通 Linux）自动进入"完整模式"，调用 Auto_Design.py
+    运行真实 NSGA-II 寻优。也可用环境变量 APP_MODE=demo|local 强制指定。
 """
 
 import contextlib
+import os
 import re
 import threading
 
@@ -33,6 +40,37 @@ import streamlit as st
 import Auto_Design as ad
 from angle_optimize import (A_PLATE, B_PLATE, DENSITY, M_VERIFY, T_PLY,
                             BucklingSolver)
+
+# =============================================================================
+# 0. 环境自动检测：云端演示 or 本地完整计算
+# =============================================================================
+def _detect_cloud_demo() -> bool:
+    """自动判断是否运行在 Streamlit Community Cloud。
+
+    判定顺序：
+        1. 环境变量 APP_MODE 显式覆盖（demo/cloud 或 local/full），便于本地调试；
+        2. Streamlit Cloud 容器的 HOME 通常为 /home/adminuser；
+        3. 兼容常见的云端环境变量（STREAMLIT_CLOUD / IS_STREAMLIT_CLOUD /
+           STREAMLIT_SHARING_MODE）。
+    本地运行（Windows / macOS / 普通 Linux）默认返回 False，跑真实 GA。
+    """
+    mode = os.environ.get("APP_MODE", "").strip().lower()
+    if mode in {"demo", "cloud", "1", "true", "yes"}:
+        return True
+    if mode in {"local", "full", "0", "false", "no"}:
+        return False
+
+    if os.environ.get("HOME", "").rstrip("/") == "/home/adminuser":
+        return True
+
+    for key in ("STREAMLIT_CLOUD", "IS_STREAMLIT_CLOUD", "STREAMLIT_SHARING_MODE"):
+        value = os.environ.get(key, "").strip().lower()
+        if value in {"1", "true", "yes", "cloud", "streamlit"}:
+            return True
+    return False
+
+
+IS_CLOUD_DEMO = _detect_cloud_demo()
 
 # =============================================================================
 # 1. 页面与常量
@@ -48,6 +86,35 @@ FONT = "Microsoft YaHei, SimHei, Segoe UI, Arial, sans-serif"
 PLOTLY_CONFIG = {"displaylogo": False, "scrollZoom": True}
 N_GRID = 41          # 3D 曲面网格点数（每边）
 CHART_H = 470        # 第二、三列图表高度
+
+# 演示模式预设案例：键为 (Nx, Ny, SF)，值为事先用完整流程算好的结果。
+# 其中 500/500 为 12 层等双轴经典解；1040/1040 与 1070/870 为 14 层结果。
+DEMO_PRESETS = {
+    (500, 500, 1.5): {
+        "label": "500/500 经典等双轴",
+        "n_plies": 12,
+        "theta4": [-44.9, 44.9, 45.2, -45.2],
+        "ncr": 2128.6,
+        "base_ncr": 1077.6,
+        "thinner": {"n": 10, "ncr": 1230.2},
+    },
+    (1040, 1040, 1.5): {
+        "label": "1040/1040 等双轴",
+        "n_plies": 14,
+        "theta4": [-40.3, 49.8, -75.4, 51.0],
+        "ncr": 3144.9,
+        "base_ncr": 1711.1,
+        "thinner": {"n": 12, "ncr": 1977.9},
+    },
+    (1070, 870, 1.5): {
+        "label": "1070/870 非等双轴",
+        "n_plies": 14,
+        "theta4": [-40.3, 49.8, -75.4, 51.0],
+        "ncr": 3469.1,
+        "base_ncr": 2012.0,
+        "thinner": {"n": 12, "ncr": 2181.8},
+    },
+}
 
 # 快速模式：临时降低 GA 规模与精修级数。退出时一定恢复全局参数。
 _FAST_LOCK = threading.Lock()
@@ -146,6 +213,78 @@ def auto_design(nx: int, ny: int, sf: float, fast: bool) -> dict:
         "thickness": float(n_plies * T_PLY),
         "d_opt": d_opt.tolist(), "d_zero": d_zero.tolist(),
         "ga_time": float(ga_time), "rows": rows, "thinner": thinner,
+    }
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def demo_design(nx: int, ny: int, sf: float) -> dict:
+    """云端演示模式：只查预设表或做纯 0° 快速估算，绝不运行 GA。"""
+    nx, ny, sf = float(nx), float(ny), float(sf)
+    target = max(nx, ny) * sf
+    biaxial = nx > 0 and ny > 0
+
+    # 纯 0° 扫描本身很轻（约 0.2 s），保留它是为了让扫描表和"层数怎么定"的
+    # 说明仍然真实，而不是凭空编一个层数。
+    rows = ad.scan_pure_zero(nx, ny, target)
+    feasible = [r for r in rows if r["ok"]]
+    if not feasible:
+        ncr_top = rows[-1]["ncr"]
+        need = ad.N_MAX * (target / ncr_top) ** (1.0 / 3.0) if ncr_top > 0 else np.inf
+        return {"status": "infeasible", "nx": nx, "ny": ny, "sf": sf,
+                "target": target, "biaxial": biaxial, "rows": rows,
+                "need_plies": float(need), "demo": True,
+                "demo_source": "estimate"}
+
+    n_min = feasible[0]["N"]
+    preset = DEMO_PRESETS.get((int(round(nx)), int(round(ny)), round(sf, 2)))
+
+    if preset is not None:
+        n_plies = preset["n_plies"]
+        theta4 = [float(t) for t in preset["theta4"]]
+        ncr = float(preset["ncr"])
+        base_ncr = float(preset["base_ncr"])
+        thinner = preset["thinner"]
+        source = "preset"
+        label = preset.get("label", "预设案例")
+    else:
+        # 未命中预设：不跑 GA，直接用"纯 0° 最小可行层数"给出快速估算。
+        n_plies = n_min if (not biaxial or n_min % 2 == 0) else n_min + 1
+        base_ncr = float(next(r for r in rows if r["N"] == n_plies)["ncr"])
+        ncr = base_ncr
+        theta4 = [0.0, 0.0, 0.0, 0.0]
+        thinner = None
+        source = "estimate"
+        label = "纯 0° 快速估算（未运行 GA）"
+
+    if biaxial:
+        stack = ad.symmetric_stack(theta4, n_plies)
+        layup = ad.stacking_text(theta4, n_plies)
+        s16, s26 = ad.balance_residual(ad.half_stack(theta4, n_plies))
+    else:
+        stack = [0.0] * n_plies
+        layup = f"[0]_{n_plies}"
+        theta4 = [0.0, 0.0, 0.0, 0.0]
+        s16 = s26 = 0.0
+
+    st_res = ad.strength_check(stack, nx, ny, sf)
+    d_opt = ad.d_of_angles(stack)
+    d_zero = ad.d_of_angles([0.0] * n_plies)
+    lam = ncr / max(nx, ny)
+
+    return {
+        "status": "ok", "nx": nx, "ny": ny, "sf": sf, "fast": True,
+        "demo": True, "demo_source": source, "demo_label": label,
+        "target": target, "biaxial": biaxial,
+        "n_min": n_min, "n_plies": n_plies,
+        "base_ncr": base_ncr, "ncr": ncr, "lam": float(lam),
+        "layup": layup, "theta4": theta4, "stack": stack,
+        "s16": float(s16), "s26": float(s26),
+        "fi": float(st_res["fi"]), "fi_ply": int(st_res["ply"]),
+        "fi_theta": float(st_res["theta"]),
+        "areal": float(ad.areal_weight(n_plies)),
+        "thickness": float(n_plies * T_PLY),
+        "d_opt": d_opt.tolist(), "d_zero": d_zero.tolist(),
+        "ga_time": 0.0, "rows": rows, "thinner": thinner,
     }
 
 
@@ -332,11 +471,18 @@ def scan_table(rows, target: float) -> pd.DataFrame:
 
 def welcome() -> None:
     st.markdown("### 复合材料层合板屈曲自动设计")
-    st.markdown(
-        "设定左侧的 **Nx / Ny / SF** 后点击 **开始优化**，"
-        "程序会调用 `Auto_Design.py` 完成层数扫描、铺层角度优化与强度校核，"
-        "并给出推荐铺层、屈曲波形与性能对比。"
-    )
+    if IS_CLOUD_DEMO:
+        st.markdown(
+            "设定左侧的 **Nx / Ny / SF** 后点击 **开始优化**，"
+            "云端演示会直接给出预设案例的推荐铺层、屈曲波形与性能对比，页面秒开；"
+            "需要运行完整 GA 时，请在本地环境启动本项目（应用会自动检测为本地模式）。"
+        )
+    else:
+        st.markdown(
+            "设定左侧的 **Nx / Ny / SF** 后点击 **开始优化**，"
+            "程序会调用 `Auto_Design.py` 完成层数扫描、铺层角度优化与强度校核，"
+            "并给出推荐铺层、屈曲波形与性能对比。"
+        )
     c1, c2, c3 = st.columns(3)
     c1.info("**① 推荐铺层**\n\n最终铺层 `[θ1/θ2/θ3/θ4]s`、Ncr 与安全裕度")
     c2.info("**② 屈曲波形**\n\nm = 1, n = 1 的 3D 曲面，可旋转、可播放幅值演化")
@@ -362,17 +508,25 @@ with st.sidebar:
     ny_in = st.slider("横向载荷 Ny (N/m)", 0, 2000, 500, 10)
     sf_in = st.slider("安全系数 SF", 1.0, 2.0, 1.5, 0.05, format="%.2f")
 
-    fast_in = st.checkbox(
-        "快速模式（数秒）", value=True,
-        help="GA 40×30 + 精修级数 M=10；最终 Ncr 仍按 M=16 重新校核。"
-             "取消勾选则与 Auto_Design.py 完全一致（约 1 分钟）。",
-    )
+    if IS_CLOUD_DEMO:
+        fast_in = True
+        st.caption("☁️ 云端环境：已自动切换极速演示，GA 已跳过")
+    else:
+        fast_in = st.checkbox(
+            "快速模式（数秒）", value=True,
+            help="GA 40×30 + 精修级数 M=10；最终 Ncr 仍按 M=16 重新校核。"
+                 "取消勾选则与 Auto_Design.py 完全一致（约 1 分钟）。",
+        )
+        st.caption("💻 本地环境：真实 NSGA-II 寻优已启用")
     run = st.button("🚀 开始优化", type="primary", width="stretch")
 
     st.divider()
     st.caption(f"结构：a = b = {A_PLATE:.2f} m，四边简支 (SS1)")
     st.caption(f"材料：T300/5208，单层 {T_PLY} mm，ρ = {DENSITY:.0f} kg/m³")
     st.caption("层数扫描：N = 4…20；双向受压取偶数层对称铺层")
+
+if IS_CLOUD_DEMO:
+    st.info("当前为云端极速演示模式，全量 GA 寻优请参考视频或本地运行。")
 
 # =============================================================================
 # 6. 计算触发（结果按参数缓存，切换图表不会重算）
@@ -403,15 +557,19 @@ if job != current:
         "下方仍显示上一次的设计结果。"
     )
 
-with st.spinner("正在调用 Auto_Design.py 的计算逻辑（快速模式数秒，标准模式约 1 min）…"):
-    res = auto_design(job["nx"], job["ny"], job["sf"], job["fast"])
+if IS_CLOUD_DEMO:
+    with st.spinner("演示模式：正在生成预设方案（已跳过 GA）…"):
+        res = demo_design(job["nx"], job["ny"], job["sf"])
+else:
+    with st.spinner("正在调用 Auto_Design.py 的计算逻辑（快速模式数秒，标准模式约 1 min）…"):
+        res = auto_design(job["nx"], job["ny"], job["sf"], job["fast"])
 
 st.caption(
     f"**设计条件**：Nx = {res['nx']:.0f} N/m ｜ Ny = {res['ny']:.0f} N/m ｜ "
     f"SF = {res['sf']:.2f} ｜ "
     f"**Ncr_target = max(Nx, Ny)·SF = {res['target']:,.0f} N/m** ｜ "
     f"{'双向受压' if res['biaxial'] else '单向受压'} ｜ "
-    f"{'快速模式' if res['fast'] else '标准模式'}"
+    f"{'演示模式' if res.get('demo') else ('快速模式' if res['fast'] else '标准模式')}"
 )
 
 # =============================================================================
@@ -440,6 +598,11 @@ col1, col2, col3 = st.columns([1.0, 1.1, 1.0], gap="large")
 with col1:
     st.subheader("① 推荐铺层")
     layup_card(res["layup"])
+    if res.get("demo"):
+        if res.get("demo_source") == "preset":
+            st.caption(f"演示模式 · 预设案例：{res.get('demo_label', '')}（已跳过 GA）")
+        else:
+            st.caption("演示模式 · 纯 0° 快速估算（未运行 GA，结果不代表角度最优）")
 
     ncr, target, lam = res["ncr"], res["target"], res["lam"]
     st.metric(
