@@ -49,6 +49,7 @@ from angle_optimize import (
 )
 
 # 环境判断
+APP_VERSION = "1.0.0"      # 设计记录、PDF 与报头共用同一个版本号
 VALID_MODES = ("local", "demo")
 DEFAULT_MODE = "demo"      # 与部署方式一致：不配置时不跑耗时优化
 
@@ -873,6 +874,20 @@ table.spec.side td.k { width: 40%; }
     border: 1px solid var(--rule);
     border-radius: 2px;
 }
+
+/* 图片缺失时的占位：保持与图同样的 16:9 占位，避免四张卡高度不齐 */
+.mode-img-missing {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 16 / 9;
+    margin: 0 0 12px 0;
+    border: 1px dashed var(--rule);
+    border-radius: 2px;
+    background: var(--paper3);
+    color: var(--ink4);
+    font-size: 0.82rem;
+}
 .mode-desc {
     font-size: 0.9rem;
     color: var(--ink2);
@@ -1027,9 +1042,17 @@ _FAST_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
-def _lower_accuracy():
-    """快速模式：临时降低 GA 规模与精修级数，退出时恢复全局参数。"""
+def _ga_guard(fast: bool):
+    """串行化 GA 调用并（快速模式下）临时降级精度。
+
+    Auto_Design 的 GA 规模与精修级数是模块级全局量：快速模式会临时改成
+    40×30、M = 10。若同一个进程里另一个会话正跑标准模式，就会读到被降级的
+    参数，因此两条路径都进同一把锁；快速模式再叠加降级与恢复。
+    """
     with _FAST_LOCK:
+        if not fast:
+            yield
+            return
         saved = (ad.GA_POP, ad.GA_GEN, ad._SOLVER_CHK)
         ad.GA_POP, ad.GA_GEN = 40, 30
         ad._SOLVER_CHK = BucklingSolver(A_PLATE, B_PLATE, 10)
@@ -1037,6 +1060,11 @@ def _lower_accuracy():
             yield
         finally:
             ad.GA_POP, ad.GA_GEN, ad._SOLVER_CHK = saved
+
+
+def _lower_accuracy():
+    """兼容旧调用点：等价于快速模式的精度降级。"""
+    return _ga_guard(True)
 
 
 # 结果来源：页面、设计记录、导出报告共用同一套说法，避免各页各写一套
@@ -1125,10 +1153,7 @@ def auto_design(nx: int, ny: int, sf: float, fast: bool) -> dict:
     if biaxial:
         n_plies = n_min if n_min % 2 == 0 else n_min + 1
         base_ncr = float(next(r for r in rows if r["N"] == n_plies)["ncr"])
-        if fast:
-            with _lower_accuracy():
-                theta, _score, ga_time = ad.optimize_layup(n_plies, nx, ny, target)
-        else:
+        with _ga_guard(fast):
             theta, _score, ga_time = ad.optimize_layup(n_plies, nx, ny, target)
         ncr, lam = ad.ncr_equiv(theta, n_plies, nx, ny, ad._SOLVER_CHK)
         half = ad.half_stack(theta, n_plies)
@@ -1320,7 +1345,7 @@ def figure_mode_3d(x, y, Z) -> go.Figure:
                           font=dict(size=12, color="#334155"),
                           buttons=[play, pause])],
         sliders=[dict(active=len(amps) - 1, x=0.02, y=-0.02, len=0.96,
-                      currentvalue=dict(prefix="变形幅值 ", font=dict(size=12)),
+                      currentvalue=dict(prefix="归一化幅值 ", font=dict(size=12)),
                       font=dict(size=11),
                       bgcolor="#f8fafc", bordercolor="#e2e8f0",
                       tickcolor="#94a3b8", steps=steps)],
@@ -1331,7 +1356,7 @@ def figure_mode_3d(x, y, Z) -> go.Figure:
             yaxis=dict(title="y (m)", range=[0.0, B_PLATE],
                        showbackground=True, backgroundcolor="#f8fafc",
                        gridcolor="#e2e8f0", zeroline=False),
-            zaxis=dict(title="w / w_max", range=[-1.2, 1.2],
+            zaxis=dict(title="w / w_max（无量纲）", range=[-1.2, 1.2],
                        showbackground=True, backgroundcolor="#f8fafc",
                        gridcolor="#e2e8f0", zeroline=False),
             aspectmode="manual", aspectratio=dict(x=1.05, y=1.05, z=0.5),
@@ -1365,7 +1390,7 @@ def figure_compare(base_ncr: float, ncr: float, target: float) -> go.Figure:
         margin=dict(l=96, r=14, t=40, b=10),
         paper_bgcolor="white",
         font=dict(family=FONT, size=13),
-        title=dict(text="同层数下的屈曲承载能力", x=0.0, y=0.97,
+        title=dict(text="同层数下的临界屈曲载荷对比（N/m）", x=0.0, y=0.97,
                    xanchor="left", yanchor="top",
                    font=dict(size=13, color="#475569")),
         showlegend=False,
@@ -1560,11 +1585,16 @@ def _figure_path(name: str):
 
 
 def _mode_image(scene: str | None) -> None:
-    """在模式卡顶部放一张示意图；图片缺失时静默跳过，不影响选择。"""
+    """在模式卡顶部放一张示意图；缺少图片时给占位提示，不影响选择。"""
     fname = MODE_IMAGES.get(scene or "", CUSTOM_MODE_IMAGE)
     path = _figure_path(fname)
     if path is not None:
         st.image(str(path), width="stretch")
+    else:
+        st.markdown(
+            f'<div class="mode-img-missing">示意图缺失：figures/{escape(fname)}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _same_stack(stack, n_plies: int, theta4) -> bool:
@@ -1653,7 +1683,15 @@ def _restart() -> None:
     _goto("mode")
 
 
-def _record_design(res: dict, job: dict) -> None:
+HISTORY_COLS = [
+    "时间", "工况", "运行模式", "来源", "求解方法", "优化规模",
+    "Nx (N/m)", "Ny (N/m)", "SF", "目标 Ncr (N/m)",
+    "推荐铺层", "层数", "总厚 (mm)", "Ncr (N/m)", "λ",
+    "结论", "计算用时 (s)", "记录号", "版本",
+]
+
+
+def _record_design(res: dict, job: dict, elapsed: float | None = None) -> None:
     """把本次设计追加到会话内的设计记录（会话结束即消失）。"""
     ok = res.get("status") != "infeasible"
     stack = res.get("stack") or []
@@ -1661,10 +1699,18 @@ def _record_design(res: dict, job: dict) -> None:
     hist = st.session_state.setdefault("history", [])
     if len(hist) >= 20:
         del hist[0]
+    src = source_of(res)
+    if src == "ga":
+        size = "NSGA-II 40 × 30（快速）" if job.get("fast") else "NSGA-II 80 × 60"
+    else:
+        size = "未运行 GA"
     hist.append({
         "时间": time.strftime("%H:%M:%S"),
         "工况": scene or "自定义工况",
-        "来源": SOURCE_INFO[source_of(res)][0],
+        "运行模式": mode_text(),
+        "来源": SOURCE_INFO[src][0],
+        "求解方法": "CLT + Rayleigh-Ritz（M = 16）",
+        "优化规模": size,
         "Nx (N/m)": int(job["nx"]),
         "Ny (N/m)": int(job["ny"]),
         "SF": round(float(job["sf"]), 2),
@@ -1675,7 +1721,17 @@ def _record_design(res: dict, job: dict) -> None:
         "Ncr (N/m)": round(float(res["ncr"]), 1) if ok else None,
         "λ": round(float(res["lam"]), 2) if ok else None,
         "结论": VERDICT_TEXT[verdict_of(res)["overall"]],
+        "计算用时 (s)": round(float(elapsed), 1) if elapsed is not None else None,
+        "记录号": f"{time.strftime('%H%M%S')}-{len(hist) + 1:02d}",
+        "版本": f"v{APP_VERSION}",
     })
+
+
+def _history_csv(hist: list) -> bytes:
+    """把设计记录导出成 CSV（Excel 友好：带 BOM 的 UTF-8）。"""
+    cols = [c for c in HISTORY_COLS if c in hist[0]]
+    frame = pd.DataFrame(hist)[cols]
+    return frame.to_csv(index=False).encode("utf-8-sig")
 
 
 def _render_history() -> None:
@@ -1690,8 +1746,12 @@ def _render_history() -> None:
     if not hist:
         st.caption("本次会话还没有设计记录；每完成一次计算会自动追加一条。")
         return
+    display_cols = ["时间", "工况", "运行模式", "来源", "Nx (N/m)", "Ny (N/m)", "SF",
+                    "目标 Ncr (N/m)", "推荐铺层", "层数", "总厚 (mm)", "Ncr (N/m)",
+                    "λ", "结论", "计算用时 (s)"]
+    frame = pd.DataFrame(hist)[[c for c in display_cols if c in hist[0]]]
     st.dataframe(
-        pd.DataFrame(hist), hide_index=True, width="stretch",
+        frame, hide_index=True, width="stretch",
         column_config={
             "SF": st.column_config.NumberColumn("SF", format="%.2f"),
             "目标 Ncr (N/m)": st.column_config.NumberColumn(
@@ -1699,18 +1759,46 @@ def _render_history() -> None:
             "总厚 (mm)": st.column_config.NumberColumn("总厚 (mm)", format="%.3f"),
             "Ncr (N/m)": st.column_config.NumberColumn("Ncr (N/m)", format="%.1f"),
             "λ": st.column_config.NumberColumn("λ", format="%.2f"),
+            "计算用时 (s)": st.column_config.NumberColumn(
+                "计算用时 (s)", format="%.1f"),
         },
     )
     st.caption(
         f"本次会话共 {len(hist)} 条记录（最多保留 20 条）；"
         "记录只保存在当前浏览器会话中，关闭页面后自动清除。"
+        "CSV 含运行模式、来源、求解方法与优化规模等字段。"
     )
-    if st.button("清空记录", key="clear_history"):
-        st.session_state["history"] = []
-        st.rerun()
+    _dl, _cl = st.columns([1, 1], gap="small")
+    with _dl:
+        st.download_button(
+            "导出记录 (CSV)", data=_history_csv(hist),
+            file_name=f"design_history_{time.strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv", key="export_history", width="stretch",
+        )
+    with _cl:
+        if st.button("清空记录", key="clear_history", width="stretch"):
+            st.session_state["history"] = []
+            st.rerun()
 
 
-def _design_conditions() -> None:
+def _assumptions_text() -> str:
+    """模型假设与适用范围；只在折叠区展示，全文共用同一段文字。"""
+    return (
+        "**几何与边界**　a = b = 0.50 m 方形层合板；四边简支（SS1，面内可自由滑动）；"
+        "面内均布线载荷 Nx / Ny（N/m）沿板边按单位宽度施加，不含点载、局部压载与预紧。\n\n"
+        "**材料与铺层**　T300/5208 单层按均质正交各向异性、线弹性处理，单层厚 0.125 mm；"
+        "只搜索关于中面对称的铺层；铺层角度在 ±1° 内按等效角度归并（制造公差）。\n\n"
+        "**求解方法**　经典层合板理论（CLT）求 D 矩阵，双正弦级数 Rayleigh–Ritz（M = 16）"
+        "求一阶临界载荷，保留 D16 / D26 弯扭耦合；属线性特征值屈曲，不含几何非线性、"
+        "初始缺陷与后屈曲路径。\n\n"
+        "**未覆盖的真实结构因素**　蜂窝夹芯、加强筋、开口、连接与胶接、边界柔性、"
+        "蒙皮与骨架的耦合、疲劳与损伤、踩踏与鸟撞等局部工况。"
+        "因此三个预设场景是代表性载荷工况下的层合板结构分析，"
+        "不是对应产品的完整有限元模型。"
+    )
+
+
+def _design_conditions(assumptions: bool = False) -> None:
     """板尺寸、材料与求解器参数（只读说明，三个页面共用）。"""
     st.markdown(
         '<div class="card-head"><span class="card-idx">A</span>'
@@ -1723,9 +1811,9 @@ def _design_conditions() -> None:
         <table class="spec">
           <tr><th style="width:34%">项目</th><th>取值</th></tr>
           <tr><td class="k">板尺寸</td><td class="v">a = b = {A_PLATE:.2f} m</td></tr>
-          <tr><td class="k">铺层厚度</td><td class="v">t_ply = {T_PLY} mm</td></tr>
+          <tr><td class="k">单层厚度</td><td class="v">t_ply = {T_PLY} mm</td></tr>
           <tr><td class="k">材料体系</td><td class="v">T300/5208 碳纤维/环氧</td></tr>
-          <tr><td class="k">面密度</td><td class="v">ρ = {DENSITY:.0f} kg/m³</td></tr>
+          <tr><td class="k">材料密度</td><td class="v">ρ = {DENSITY:.0f} kg/m³</td></tr>
           <tr><td class="k">层数扫描</td><td class="v">N = {ad.N_MIN}…{ad.N_MAX}，对称铺层</td></tr>
           <tr><td class="k">屈曲求解</td><td class="v">CLT + Rayleigh-Ritz，M = 16</td></tr>
           <tr><td class="k">优化算法</td><td class="v">NSGA-II · 80 × 60（快速 40 × 30）</td></tr>
@@ -1736,7 +1824,7 @@ def _design_conditions() -> None:
     st.markdown(
         f"""
         <table class="spec side">
-          <tr><th>材料常数</th><th style="text-align:right">取值</th></tr>
+          <tr><th>弹性常数</th><th style="text-align:right">取值</th></tr>
           <tr><td class="k">E1</td><td class="v" style="text-align:right">{E1:g} GPa</td></tr>
           <tr><td class="k">E2</td><td class="v" style="text-align:right">{E2:g} GPa</td></tr>
           <tr><td class="k">ν12</td><td class="v" style="text-align:right">{V12:g}</td></tr>
@@ -1745,7 +1833,27 @@ def _design_conditions() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.caption("*材料常数与 angle_optimize.py 中的求解器参数一致。*")
+    st.markdown(
+        f"""
+        <table class="spec side">
+          <tr><th>强度许用值</th><th style="text-align:right">取值</th></tr>
+          <tr><td class="k">Xt / Xc（纵向）</td>
+              <td class="v" style="text-align:right">{ad.XT:g} / {ad.XC:g} MPa</td></tr>
+          <tr><td class="k">Yt / Yc（横向）</td>
+              <td class="v" style="text-align:right">{ad.YT:g} / {ad.YC:g} MPa</td></tr>
+          <tr><td class="k">S12（面内剪切）</td>
+              <td class="v" style="text-align:right">{ad.S12:g} MPa</td></tr>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "*弹性常数取自 `angle_optimize.py`，强度许用值取自 `Auto_Design.py` 的 "
+        "T300/5208 典型值（原文件未标注材料手册出处），Tsai-Hill 的 FI 以此为基准。*"
+    )
+    if assumptions:
+        with st.expander("模型假设与适用范围"):
+            st.markdown(_assumptions_text())
 
 
 # 载荷输入：滑块与精确值框共用同一对数，改任意一个另一个跟着走
@@ -1825,9 +1933,10 @@ def _mode_switch(details: list | None = None) -> None:
     """
     if IS_DEMO:
         st.checkbox(
-            "在本机运行完整优化（NSGA-II 寻优）", key="run_local",
+            "在本次会话运行完整优化（NSGA-II 寻优）", key="run_local",
             help="演示模式默认只读取离线算例、不跑 GA；勾选后本会话改为调用 "
-                 "Auto_Design.py 真正寻优（快速约 5 s，标准约 1 分钟）。",
+                 "Auto_Design.py 真正寻优。计算发生在托管该页面的主机上"
+                 "（快速约 10 s，标准约 1 分钟）。",
         )
     st.caption(
         "当前执行路径："
@@ -1852,7 +1961,7 @@ def _mode_note(nx_in: int, ny_in: int, sf_in: float,
     if not _demo_now():
         fast_in = st.checkbox(
             "快速模式", value=True, key="fast_chk",
-            help="GA 40×30 + 精修级数 M=10，约 5 s；取消勾选则 80×60，约 1 分钟。"
+            help="GA 40×30 + 精修级数 M=10，约 10 s；取消勾选则 80×60，约 1 分钟。"
                  "最终 Ncr 仍按 M=16 复核。",
         )
         st.caption(
@@ -1994,7 +2103,7 @@ def page_params() -> None:
                 _goto("result")
 
     with right:
-        _design_conditions()
+        _design_conditions(assumptions=True)
 
     if st.button("← 返回选择模式", key="back_mode"):
         _goto("mode")
@@ -2128,7 +2237,8 @@ def build_report_pdf(res: dict):
     pdf.set_font(fam, size=9)
     pdf.set_text_color(148, 163, 184)
     pdf.multi_cell(0, 6,
-                   "本报告依据 CLT + Rayleigh-Ritz 计算结果自动生成，"
+                   f"本报告依据 v{APP_VERSION} 的 CLT + Rayleigh-Ritz 计算结果生成"
+                   f"（{time.strftime('%Y-%m-%d %H:%M')}），"
                    "仅用于方案比选与设计参考。",
                    align="L", new_x="LMARGIN", new_y="NEXT")
 
@@ -2156,10 +2266,10 @@ for _key, _default in (
 
 # 报头：三个页面共用
 st.markdown(
-    """
+    f"""
     <div class="masthead">
       <div class="masthead-brand">复合材料铺层优化工作台</div>
-      <div class="masthead-meta">CLT<span class="sep">/</span>Rayleigh-Ritz<span class="sep">/</span>NSGA-II<span class="sep">/</span>v1.0.0</div>
+      <div class="masthead-meta">CLT<span class="sep">/</span>Rayleigh-Ritz<span class="sep">/</span>NSGA-II<span class="sep">/</span>v{APP_VERSION}</div>
     </div>
     <div class="masthead-sub">四边简支方板 · T300/5208</div>
     """,
@@ -2255,7 +2365,7 @@ else:
 
     st.session_state["_res_cache"] = {"key": _cache_key, "res": res,
                                       "elapsed": _elapsed}
-    _record_design(res, job)
+    _record_design(res, job, _elapsed)
 
 st.caption(
     f"**设计条件**：Nx = {res['nx']:.0f} N/m、Ny = {res['ny']:.0f} N/m、"
@@ -2269,14 +2379,21 @@ st.caption(
 # 不可行分支
 if res["status"] == "infeasible":
     st.error(
-        f"纯 0° 铺层在 N ≤ {ad.N_MAX} 层内无法满足 Ncr_target = "
-        f"{res['target']:,.0f} N/m。按 Ncr ∝ t³ 估算，约需 "
-        f"{res['need_plies']:.1f} 层（{res['need_plies'] * T_PLY:.2f} mm）。"
+        f"纯 0° 基准在 N ≤ {ad.N_MAX} 层内未找到可行层数：最高 Ncr = "
+        f"{res['rows'][-1]['ncr']:,.0f} N/m < Ncr_target = {res['target']:,.0f} N/m。"
+        f"按 Ncr ∝ t³ 外推，约需 {res['need_plies']:.1f} 层"
+        f"（{res['need_plies'] * T_PLY:.2f} mm）。"
     )
     st.markdown("#### 纯 0° 层数扫描明细")
     st.dataframe(scan_table(res["rows"], res["target"]),
                  hide_index=True, width="stretch")
-    st.caption("建议：减小 Nx / Ny / SF，或扩展 N ≤ 20 的层数扫描范围。")
+    st.caption(
+        "说明：这个分支只按纯 0°/90° 铺层判断层数，**没有搜索铺层角度**。"
+        f"同层数下 ±45 等铺层能提供更高的双向屈曲载荷（本机验证：N = {ad.N_MAX}、"
+        "Nx = Ny = 2000 N/m 时约为纯 0° 的 2 倍），"
+        "所以这里只能说明「纯 0° 基准在 N ≤ 20 内不满足目标」，不能断定该工况整体无可行铺层。"
+    )
+    st.caption("建议：减小 Nx / Ny / SF，或改用更高刚度的材料体系。")
     if st.button("← 返回修改参数", key="back_params_from_error"):
         _goto("params")
     st.stop()
@@ -2300,12 +2417,6 @@ with tab1:
         if scene == "新能源电池包上盖":
             st.caption("另：实际设计时还要补局部踩踏刚度校核。")
 
-        layup_card(res["layup"])
-        st.caption(
-            f"铺层序列：{pretty_layup(res['layup'])}、"
-            f"{res['n_plies']} 层、总厚 {res['thickness']:.2f} mm"
-        )
-
         src = source_of(res)
         st.caption(source_line(res))
         if src == "preset":
@@ -2315,6 +2426,12 @@ with tab1:
                 "该工况命中的离线算例来源尚未核实，本版本未采用，"
                 "结果按纯 0° 估算给出。"
             )
+
+        layup_card(res["layup"])
+        st.caption(
+            f"铺层序列：{pretty_layup(res['layup'])}、"
+            f"{res['n_plies']} 层、总厚 {res['thickness']:.2f} mm"
+        )
 
         st.markdown(
             f"""
@@ -2685,6 +2802,10 @@ with st.expander("方法与说明"):
 **快速模式**　仅把 GA 规模降为 40×30、精修级数降为 M = 10；最终 Ncr 统一用 M = 16
 重新校核。取消勾选即与 `Auto_Design.py` 完全一致（约 1 分钟）。
 
-**缓存**　结果按 (Nx, Ny, SF, 快速模式) 缓存，调整图表选项或重复点击不会重算。
+**缓存**　结果按 (Nx, Ny, SF, 快速模式, 运行模式) 缓存，调整图表选项或重复点击不会重算。
+
+**适用边界**
+
+{_assumptions_text()}
 """
     )
