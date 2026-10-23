@@ -1,4 +1,4 @@
-"""复合材料层合板屈曲分析（Streamlit + Plotly）。
+"""复合材料铺层优化工作台（Streamlit + Plotly）。
 
 运行模式由环境变量 APP_MODE 明确指定，不按操作系统自动猜测：
 
@@ -66,7 +66,7 @@ MODE_INVALID = bool(_raw_mode) and _raw_mode.lower() not in VALID_MODES
 
 # 页面与样式
 st.set_page_config(
-    page_title="复合材料层合板屈曲分析",
+    page_title="复合材料铺层优化工作台",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -100,7 +100,7 @@ def mode_text() -> str:
     return "local（本会话切换）" if _local_run() else "demo"
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
     color-scheme: light;
@@ -119,7 +119,7 @@ CSS = """
     --warn: #f59e0b;
     --danger: #ef4444;
     --sans: 'Inter', 'Segoe UI', 'Microsoft YaHei', sans-serif;
-    --serif: 'Playfair Display', Georgia, 'Songti SC', 'SimSun', serif;
+    --serif: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     --mono: 'JetBrains Mono', 'Consolas', 'Cascadia Mono', 'SF Mono', monospace;
 }
 
@@ -498,6 +498,7 @@ p, li, label, span { line-height: 1.65; }
 }
 .metric-v {
     font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
     font-size: 1.14rem;
     font-weight: 600;
     color: var(--ink);
@@ -579,6 +580,7 @@ table.spec td.k {
 }
 table.spec td.v {
     font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
     color: var(--ink);
     font-weight: 500;
     font-size: 0.81rem;
@@ -1771,8 +1773,11 @@ def _spec_table(headers: list, rows: list) -> None:
                 unsafe_allow_html=True)
 
 
-def _mode_switch() -> None:
-    """演示模式下提供显式升级开关；local 模式只显示状态行。"""
+def _mode_switch(details: list | None = None) -> None:
+    """演示模式下提供显式升级开关；local 模式只显示状态行。
+
+    传 details 时把口径文字交给调用方统一折叠，避免一屏堆多个展开框。
+    """
     if IS_DEMO:
         st.checkbox(
             "在本机运行完整优化（NSGA-II 寻优）", key="run_local",
@@ -1781,13 +1786,23 @@ def _mode_switch() -> None:
         )
     st.caption(
         "当前执行路径："
-        + ("演示（只读离线算例，不运行 GA）" if _demo_now()
-           else "本机完整计算（NSGA-II 寻优，最终 Ncr 按 M = 16 复核）")
-        + f"；环境变量 APP_MODE = {APP_MODE}。"
+        + ("演示（只读离线算例）" if _demo_now() else "本机完整计算")
     )
+    text = (
+        ("只读取离线预设算例，不运行 GA；其他工况退回纯 0° 估算。"
+         if _demo_now()
+         else "调用 NSGA-II 真正寻优，最终 Ncr 按 M = 16 复核。")
+        + f"环境变量 APP_MODE = {APP_MODE}。"
+    )
+    if details is None:
+        with st.expander("查看执行口径"):
+            st.caption(text)
+    else:
+        details.append(text)
 
 
-def _mode_note(nx_in: int, ny_in: int, sf_in: float) -> bool:
+def _mode_note(nx_in: int, ny_in: int, sf_in: float,
+               details: list | None = None) -> bool:
     """按当前执行路径给出说明；返回本次是否走快速 GA（演示分支恒为 True）。"""
     if not _demo_now():
         fast_in = st.checkbox(
@@ -1805,16 +1820,17 @@ def _mode_note(nx_in: int, ny_in: int, sf_in: float) -> bool:
         f"{int(a)}/{int(b)}（SF {float(c):.2f}）"
         for a, b, c in sorted(DEMO_PRESETS)
     )
-    st.caption(f"本模式可用的离线算例：{presets_txt}；其他组合退回纯 0° 估算。")
+    st.caption(f"本模式可用的离线算例 {len(DEMO_PRESETS)} 组；其他组合退回纯 0° 估算。")
+    if details is None:
+        with st.expander("查看本模式可用的离线算例"):
+            st.caption(presets_txt)
+    else:
+        details.append(f"可用离线算例：{presets_txt}。")
 
     key = (int(nx_in), int(ny_in), round(float(sf_in), 2))
     isolated = UNVERIFIED_DEMO_PRESETS.get(key)
     if isolated is not None:
-        st.caption(
-            f"该工况与隔离算例「{isolated['label']}」的载荷相同，"
-            "但这条算例的来源尚未核实，本版本不直接采用；"
-            "结果按纯 0° 估算给出。"
-        )
+        st.caption(f"该工况命中的离线算例「{isolated['label']}」来源未核实，已改用纯 0° 估算。")
     if key not in DEMO_PRESETS:
         st.caption("当前这组载荷没有离线算例；直接运行只会得到纯 0° 估算结果。")
     return True
@@ -1828,7 +1844,6 @@ def page_mode() -> None:
         unsafe_allow_html=True,
     )
     st.caption("选一个场景进下一步；算完觉得不行，返回改载荷重算就行。")
-    _mode_switch()
 
     presets = [(k, v) for k, v in SCENES.items() if v["preset"] is not None]
     left, right = st.columns(2, gap="medium")
@@ -1867,6 +1882,8 @@ def page_mode() -> None:
             _goto("params")
 
     st.divider()
+    _mode_switch()
+    st.divider()
     _design_conditions()
     st.divider()
     _render_history()
@@ -1898,17 +1915,19 @@ def page_params() -> None:
         ny_in = _load_input("横向载荷 Ny (N/m)", NX_RANGE, "ny")
         sf_in = _load_input("安全系数 SF", SF_RANGE, "sf", fmt="%.2f")
 
-        st.caption(
-            f"取值范围：Nx / Ny {NX_RANGE[0]}–{NX_RANGE[1]} N/m"
-            f"（步长 {NX_RANGE[2]}），"
-            f"SF {SF_RANGE[0]:.2f}–{SF_RANGE[1]:.2f}"
-            f"（步长 {SF_RANGE[2]:.2f}）。"
-            "右侧精确值框可直接键入，与滑块双向同步。"
-        )
+        st.caption("支持滑块快捷调节与精确值输入（两者双向同步）。")
 
-        _mode_switch()
-        fast_in = _mode_note(nx_in, ny_in, sf_in)
+        _details: list[str] = [
+            f"Nx / Ny {NX_RANGE[0]}–{NX_RANGE[1]} N/m（步长 {NX_RANGE[2]}），"
+            f"SF {SF_RANGE[0]:.2f}–{SF_RANGE[1]:.2f}（步长 {SF_RANGE[2]:.2f}）。"
+            "右侧精确值框可直接键入，与滑块双向同步。",
+        ]
+        _mode_switch(_details)
+        fast_in = _mode_note(nx_in, ny_in, sf_in, _details)
         _target_metric(max(nx_in, ny_in) * sf_in)
+        with st.expander("查看口径说明"):
+            for _line in _details:
+                st.caption(_line)
         _job = st.session_state.get("design_job")
         if _job and (_job.get("nx"), _job.get("ny"),
                      round(float(_job.get("sf", 0)), 2), bool(_job.get("fast"))
@@ -2092,7 +2111,7 @@ for _key, _default in (
 st.markdown(
     """
     <div class="masthead">
-      <div class="masthead-brand">复合材料层合板屈曲分析</div>
+      <div class="masthead-brand">复合材料铺层优化工作台</div>
       <div class="masthead-meta">CLT<span class="sep">/</span>Rayleigh-Ritz<span class="sep">/</span>NSGA-II<span class="sep">/</span>v1.0.0</div>
     </div>
     <div class="masthead-sub">四边简支方板 · T300/5208</div>
@@ -2173,10 +2192,10 @@ else:
             status.update(label="计算失败", state="error", expanded=True)
             st.error(f"计算过程中出现异常，没有产生结果："
                      f"{type(exc).__name__}: {exc}")
-            st.caption(
-                "这是程序异常，不代表设计不达标。可返回上一步调整参数后重试；"
-                "若重复出现，请把上面的异常信息反馈给开发者。"
-            )
+            st.caption("这是程序异常，不代表设计不达标。")
+            with st.expander("怎么处理"):
+                st.caption("可返回上一步调整参数后重试；若重复出现，"
+                           "请把上面的异常信息反馈给开发者。")
             if st.button("← 返回修改参数", key="back_params_from_error_calc"):
                 _goto("params")
             st.stop()
@@ -2287,7 +2306,7 @@ with tab1:
             '</div>',
             unsafe_allow_html=True,
         )
-        st.caption("注：铺层角度在 ±1° 容差内视为等效（如 44.9° 显示为 45° 色块），符合实际制造工艺误差。")
+        st.caption("注：铺层角度在 ±1° 容差内视为等效（制造工艺误差）。")
         st.caption("铺层顺序：外表面 → 中面 → 外表面")
 
         st.markdown(
@@ -2399,8 +2418,7 @@ with tab2:
             width="stretch", config=PLOTLY_CONFIG,
         )
         st.caption(
-            "色标 = w / w_max（无量纲，0…1）；拖动旋转、滚轮缩放，点「播放」查看幅值演化。"
-            f"该铺层 Ritz 临界模态：m = {mode['m']}, n = {mode['n']}。"
+            f"色标 = w / w_max（无量纲）；Ritz 临界模态 m = {mode['m']}, n = {mode['n']}。"
         )
 
 # Tab 3
@@ -2459,10 +2477,12 @@ with tab3:
 
         st.divider()
         st.markdown("#### 离线参考算例对比")
-        st.caption(
-            "把当前铺层分别与 Navier 解析解、离线 ABAQUS 算例对照。"
-            "只有铺层与载荷都对应同一个模型时才给出偏差，否则只标明不可比较及原因。"
-        )
+        st.caption("同一铺层分别给出 Ritz、Navier 与离线 ABAQUS 的结果。")
+        with st.expander("查看对照口径"):
+            st.caption(
+                "只有铺层与载荷都对应同一个模型时才给出差异，"
+                "否则只标明不可比较及原因；差异不是模型验证误差。"
+            )
 
         nx_cur, ny_cur = float(res["nx"]), float(res["ny"])
         ncr_ritz = float(res["ncr"])
@@ -2579,14 +2599,16 @@ with tab3:
             else:
                 st.caption(f"未找到 figures/{img_name}，请确认图片随项目一起部署。")
 
-        st.caption(
-            "证据等级：包内只能核对离线算例的工况、铺层、特征值与云图，"
-            "无法复核材料定义、几何、网格、边界条件与加载方式，"
-            "因此即便铺层一致，也只能算条件性参考对比，不构成验证结论。"
-            "参考算例覆盖 "
-            + "、".join(f"{a}/{b} N/m" for a, b in sorted(ABAQUS_PRESETS))
-            + "，只比对一阶临界载荷，不提供实时求解。"
-        )
+        st.caption("证据等级：条件性参考对比，不构成验证结论。")
+        with st.expander("查看证据等级与覆盖范围"):
+            st.caption(
+                "包内只能核对离线算例的工况、铺层、特征值与云图，"
+                "无法复核材料定义、几何、网格、边界条件与加载方式，"
+                "因此即便铺层一致，也只能算条件性参考对比，不构成验证结论。"
+                "参考算例覆盖 "
+                + "、".join(f"{a}/{b} N/m" for a, b in sorted(ABAQUS_PRESETS))
+                + "，只比对一阶临界载荷，不提供实时求解。"
+            )
 
 # 页脚说明
 st.divider()
