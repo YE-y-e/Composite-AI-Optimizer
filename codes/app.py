@@ -100,13 +100,13 @@ def mode_text() -> str:
     return "local（本会话切换）" if _local_run() else "demo"
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
+/* 全部使用本机字体：不依赖在线字体服务，断网也能正常显示 */
 :root {
     color-scheme: light;
     --ink: #0f172a;
     --ink2: #334155;
     --ink3: #64748b;
+    --ink4: #475569;
     --paper: #f8fafc;
     --paper2: #ffffff;
     --paper3: #f1f5f9;
@@ -118,9 +118,12 @@ CSS = """
     --ok: #10b981;
     --warn: #f59e0b;
     --danger: #ef4444;
-    --sans: 'Inter', 'Segoe UI', 'Microsoft YaHei', sans-serif;
-    --serif: 'Inter', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-    --mono: 'JetBrains Mono', 'Consolas', 'Cascadia Mono', 'SF Mono', monospace;
+    /* 中文统一雅黑，英文与数字走系统无衬线；标题与正文同一字体体系 */
+    --sans: 'Microsoft YaHei', 'Microsoft YaHei UI', 'Segoe UI', Arial,
+            'Noto Sans SC', 'PingFang SC', system-ui, -apple-system, sans-serif;
+    --heading: var(--sans);
+    /* 等宽只留给铺层序列、矩阵符号这类技术记号 */
+    --mono: 'Consolas', 'Cascadia Mono', 'Segoe UI Mono', monospace;
 }
 
 html, body, [class*="css"] {
@@ -173,29 +176,29 @@ footer { display: none !important; }
     flex-wrap: wrap;
 }
 .masthead-brand {
-    font-family: var(--serif);
-    font-size: 1.48rem;
+    font-family: var(--heading);
+    font-size: 1.45rem;
     font-weight: 600;
-    letter-spacing: 0.015em;
+    letter-spacing: 0;
     color: #ffffff;
     line-height: 1.32;
 }
 .masthead-meta {
-    font-family: var(--mono);
-    font-size: 0.69rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
     font-weight: 500;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.03em;
     text-transform: none;
-    color: #94a3b8;
+    color: #cbd5e1;
     white-space: nowrap;
 }
-.masthead-meta .sep { color: #334155; margin: 0 0.55rem; }
+.masthead-meta .sep { color: #64748b; margin: 0 0.55rem; }
 .masthead-sub {
-    font-family: var(--mono);
-    font-size: 0.67rem;
-    letter-spacing: 0.13em;
-    text-transform: uppercase;
-    color: var(--ink3);
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    letter-spacing: 0.03em;
+    text-transform: none;
+    color: var(--ink4);
     margin: 8px 0 20px 2px;
 }
 
@@ -204,29 +207,29 @@ footer { display: none !important; }
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--ink3);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: var(--ink4);
     margin: 0 0 8px 0;
 }
 .sec-label b {
-    font-family: var(--mono);
-    font-size: 0.66rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0;
     background: var(--accent-light);
     color: var(--accent);
     padding: 2px 6px;
     border-radius: 3px;
 }
 .sec-title {
-    font-family: var(--serif);
-    font-size: 1.45rem;
+    font-family: var(--heading);
+    font-size: 1.3rem;
     font-weight: 600;
     color: var(--ink);
-    line-height: 1.35;
+    line-height: 1.4;
     margin: 0 0 12px 0;
 }
 .card-head {
@@ -238,30 +241,30 @@ footer { display: none !important; }
     margin-bottom: 14px;
 }
 .card-idx {
-    font-family: var(--mono);
-    font-size: 0.67rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0;
     background: var(--accent-light);
     color: var(--accent);
     padding: 2px 6px;
     border-radius: 3px;
 }
-.card-title { font-size: 0.95rem; font-weight: 600; color: var(--ink); letter-spacing: 0.02em; }
+.card-title { font-size: 1rem; font-weight: 600; color: var(--ink); letter-spacing: 0; }
 .card-aside {
     margin-left: auto;
-    font-family: var(--mono);
-    font-size: 0.63rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #94a3b8;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: var(--ink4);
     white-space: nowrap;
 }
 
 h1, h2, h3, h4, h5 { color: var(--ink); letter-spacing: 0; }
-h3 { font-size: 1.02rem; font-weight: 600; margin: 0.1rem 0 0.6rem 0; }
-h4 { font-size: 0.9rem; font-weight: 600; color: var(--ink2); margin: 1rem 0 0.5rem 0; }
-p, li, label, span { line-height: 1.65; }
+h3 { font-size: 1.1rem; font-weight: 600; margin: 0.1rem 0 0.6rem 0; }
+h4 { font-size: 1rem; font-weight: 600; color: var(--ink2); margin: 1rem 0 0.5rem 0; }
+p, li, label, span { line-height: 1.68; }
 
 /* 侧边栏 */
 [data-testid="stSidebar"] {
@@ -274,21 +277,21 @@ p, li, label, span { line-height: 1.65; }
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 0.71rem;
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--ink3);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: var(--ink4);
     margin: 0 0 10px 0;
 }
 .side-head b {
-    font-family: var(--mono);
-    font-size: 0.65rem;
+    font-family: var(--sans);
+    font-size: 0.78rem;
     background: var(--accent-light);
     color: var(--accent);
     padding: 2px 5px;
     border-radius: 3px;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
 }
 .side-spec { margin: 2px 0 4px 0; }
 .side-spec div {
@@ -297,33 +300,34 @@ p, li, label, span { line-height: 1.65; }
     gap: 10px;
     padding: 5px 0;
     border-bottom: 1px solid var(--paper3);
-    font-size: 0.73rem;
+    font-size: 0.86rem;
 }
 .side-spec div:last-child { border-bottom: none; }
-.side-spec span { color: var(--ink3); letter-spacing: 0.05em; white-space: nowrap; }
+.side-spec span { color: var(--ink4); letter-spacing: 0; white-space: nowrap; }
 .side-spec em {
     font-style: normal;
-    font-family: var(--mono);
-    color: var(--ink2);
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
     font-weight: 500;
     text-align: right;
 }
 
-/* 控件标签：小号、加粗、不改变大小写（单位不可大写） */
+/* 控件标签：14px 以上，加粗，不改变大小写（单位不可大写） */
 [data-testid="stWidgetLabel"] p,
 .stSlider label p,
 .stSelectbox label p,
 .stCheckbox label p {
-    font-size: 0.72rem !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.03em !important;
+    font-size: 0.9rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0 !important;
     text-transform: none;
     color: var(--ink2) !important;
     margin-bottom: 2px !important;
 }
 [data-testid="stCheckbox"] label p,
 [data-testid="stRadio"] label p {
-    font-size: 0.78rem !important;
+    font-size: 0.9rem !important;
     letter-spacing: 0 !important;
     text-transform: none;
     color: var(--ink2) !important;
@@ -332,8 +336,9 @@ p, li, label, span { line-height: 1.65; }
 [data-testid="stSlider"] [data-testid="stThumbValue"],
 [data-testid="stSliderThumbValue"],
 [data-testid="stSlider"] output {
-    font-family: var(--mono) !important;
-    font-size: 0.74rem !important;
+    font-family: var(--sans) !important;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.88rem !important;
     font-weight: 600 !important;
     color: var(--ink) !important;
 }
@@ -392,9 +397,9 @@ p, li, label, span { line-height: 1.65; }
     border-radius: 3px !important;
     color: #ffffff !important;
     font-weight: 600 !important;
-    font-size: 0.8rem !important;
-    letter-spacing: 0.14em;
-    padding: 0.62rem 1rem !important;
+    font-size: 0.92rem !important;
+    letter-spacing: 0.02em;
+    padding: 0.66rem 1rem !important;
     box-shadow: none !important;
     transition: background 0.15s ease;
 }
@@ -417,9 +422,9 @@ p, li, label, span { line-height: 1.65; }
     border-radius: 3px !important;
     color: var(--ink) !important;
     font-weight: 600 !important;
-    font-size: 0.78rem !important;
-    letter-spacing: 0.08em;
-    padding: 0.55rem 1rem !important;
+    font-size: 0.9rem !important;
+    letter-spacing: 0.02em;
+    padding: 0.58rem 1rem !important;
     transition: background 0.15s ease, color 0.15s ease;
 }
 [data-testid="stDownloadButton"] button:hover {
@@ -437,8 +442,8 @@ p, li, label, span { line-height: 1.65; }
     box-shadow: none;
 }
 .st-key-card1 h3, .st-key-card2 h3, .st-key-card3 h3 {
-    font-size: 0.95rem;
-    letter-spacing: 0.02em;
+    font-size: 1rem;
+    letter-spacing: 0;
 }
 
 /* 页签：下划线式 */
@@ -455,10 +460,10 @@ p, li, label, span { line-height: 1.65; }
     padding: 0 0 9px 0 !important;
     border-radius: 0 !important;
     background: transparent !important;
-    color: var(--ink3) !important;
+    color: var(--ink4) !important;
     font-weight: 600 !important;
-    font-size: 0.79rem !important;
-    letter-spacing: 0.1em !important;
+    font-size: 0.92rem !important;
+    letter-spacing: 0.01em !important;
     border-bottom: 2px solid transparent !important;
     box-shadow: none !important;
 }
@@ -489,33 +494,33 @@ p, li, label, span { line-height: 1.65; }
 }
 .metric { background: var(--paper2); padding: 13px 15px 14px 15px; }
 .metric-l {
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.13em;
-    text-transform: uppercase;
-    color: var(--ink3);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--ink4);
     margin-bottom: 6px;
 }
 .metric-v {
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-variant-numeric: tabular-nums;
-    font-size: 1.14rem;
+    font-size: 1.3rem;
     font-weight: 600;
     color: var(--ink);
-    line-height: 1.22;
-    letter-spacing: -0.01em;
+    line-height: 1.24;
+    letter-spacing: 0;
 }
 .metric-v small {
-    font-family: var(--mono);
-    font-size: 0.72rem;
+    font-family: var(--sans);
+    font-size: 0.84rem;
     font-weight: 500;
-    color: var(--ink3);
+    color: var(--ink4);
     margin-left: 4px;
     letter-spacing: 0;
 }
-.metric-n { font-size: 0.69rem; color: var(--ink3); margin-top: 5px; line-height: 1.45; }
-.metric.main .metric-v { font-size: 1.55rem; }
-.metric.main .metric-v small { font-size: 0.82rem; }
+.metric-n { font-size: 0.82rem; color: var(--ink4); margin-top: 5px; line-height: 1.5; }
+.metric.main .metric-v { font-size: 1.68rem; }
+.metric.main .metric-v small { font-size: 0.9rem; }
 
 /* 原生 st.metric（保留兼容） */
 [data-testid="stMetric"] {
@@ -525,26 +530,27 @@ p, li, label, span { line-height: 1.65; }
     padding: 12px 15px !important;
 }
 [data-testid="stMetricValue"] {
-    font-family: var(--mono) !important;
-    font-size: 1.28rem !important;
+    font-family: var(--sans) !important;
+    font-variant-numeric: tabular-nums;
+    font-size: 1.4rem !important;
     font-weight: 600 !important;
     color: var(--ink) !important;
     letter-spacing: -0.01em;
 }
 [data-testid="stMetricLabel"] p {
-    font-size: 0.65rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.13em !important;
-    text-transform: uppercase;
-    color: var(--ink3) !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+    text-transform: none;
+    color: var(--ink4) !important;
 }
-[data-testid="stMetricDelta"] { font-family: var(--mono) !important; font-size: 0.72rem !important; }
+[data-testid="stMetricDelta"] { font-family: var(--sans) !important; font-variant-numeric: tabular-nums; font-size: 0.86rem !important; }
 
 /* 表格 */
 table.spec {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.85rem;
+    font-size: 0.92rem;
     border: 1px solid var(--rule);
     border-radius: 3px;
     overflow: hidden;
@@ -553,37 +559,37 @@ table.spec {
 table.spec th {
     background: var(--paper3);
     text-align: left;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.13em;
+    font-size: 0.84rem;
+    font-weight: 600;
+    letter-spacing: 0;
     /* 表头里会出现 Ncr (N/m) 这类单位，不能转大写 */
     text-transform: none;
-    color: var(--ink3);
-    padding: 8px 14px;
+    color: var(--ink4);
+    padding: 9px 14px;
     border-bottom: 1px solid var(--rule);
     white-space: nowrap;
 }
 table.spec td {
-    padding: 9px 14px;
+    padding: 10px 14px;
     border-bottom: 1px solid var(--rule);
     color: var(--ink2);
     vertical-align: top;
-    line-height: 1.6;
+    line-height: 1.62;
 }
 table.spec tr:last-child td { border-bottom: none; }
 table.spec td.k {
-    color: var(--ink3);
+    color: var(--ink4);
     width: 24%;
     white-space: nowrap;
-    font-size: 0.77rem;
-    letter-spacing: 0.03em;
+    font-size: 0.9rem;
+    letter-spacing: 0;
 }
 table.spec td.v {
-    font-family: var(--mono);
+    font-family: var(--sans);
     font-variant-numeric: tabular-nums;
     color: var(--ink);
     font-weight: 500;
-    font-size: 0.81rem;
+    font-size: 0.92rem;
 }
 
 [data-testid="stTable"] {
@@ -591,23 +597,24 @@ table.spec td.v {
     border-radius: 3px;
     overflow: hidden;
 }
-[data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+[data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 [data-testid="stTable"] thead th {
     background: var(--paper3) !important;
-    color: var(--ink3) !important;
-    font-size: 0.65rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.13em !important;
-    text-transform: uppercase;
-    padding: 8px 12px !important;
+    color: var(--ink4) !important;
+    font-size: 0.84rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+    text-transform: none;
+    padding: 9px 12px !important;
     border-bottom: 1px solid var(--rule) !important;
     text-align: left !important;
 }
 [data-testid="stTable"] tbody td {
-    padding: 9px 12px !important;
+    padding: 10px 12px !important;
     border-bottom: 1px solid var(--rule) !important;
     color: var(--ink2) !important;
     font-variant-numeric: tabular-nums;
+    font-size: 0.9rem !important;
 }
 [data-testid="stTable"] tbody tr:last-child td { border-bottom: none !important; }
 
@@ -626,10 +633,10 @@ table.spec td.v {
     box-shadow: none !important;
 }
 [data-testid="stExpander"] summary {
-    font-size: 0.79rem !important;
+    font-size: 0.87rem !important;
     font-weight: 600 !important;
     color: var(--ink2) !important;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.02em;
 }
 [data-testid="stExpander"] summary:hover { color: var(--ink) !important; }
 
@@ -642,7 +649,7 @@ table.spec td.v {
     box-shadow: none !important;
     padding: 11px 15px !important;
 }
-[data-testid="stAlert"] p { font-size: 0.82rem !important; line-height: 1.65; color: var(--ink2) !important; }
+[data-testid="stAlert"] p { font-size: 0.9rem !important; line-height: 1.68; color: var(--ink2) !important; }
 [data-testid="stAlert"] svg { display: none; }
 [data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]) { border-left-color: var(--ok) !important; }
 [data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]) { border-left-color: var(--warn) !important; }
@@ -663,9 +670,9 @@ table.spec td.v {
 }
 [data-testid="stStatusWidget"] p,
 [data-testid="stStatus"] p {
-    font-size: 0.74rem !important;
-    color: var(--ink3) !important;
-    line-height: 1.5 !important;
+    font-size: 0.85rem !important;
+    color: var(--ink4) !important;
+    line-height: 1.55 !important;
 }
 [data-testid="stStatusWidget"] svg, [data-testid="stStatus"] svg {
     width: 13px !important;
@@ -682,9 +689,9 @@ table.spec td.v {
     border: 1px solid var(--rule);
     border-left: 3px solid var(--accent);
     padding: 10px 14px;
-    font-size: 0.83rem;
+    font-size: 0.9rem;
     color: var(--ink2);
-    line-height: 1.65;
+    line-height: 1.68;
     margin: 4px 0 8px 0;
 }
 
@@ -694,9 +701,9 @@ table.spec td.v {
     flex-wrap: wrap;
     gap: 6px 16px;
     align-items: center;
-    font-size: 0.71rem;
-    color: var(--ink3);
-    letter-spacing: 0.05em;
+    font-size: 0.82rem;
+    color: var(--ink4);
+    letter-spacing: 0.03em;
     margin: 2px 0 6px 0;
 }
 .layup-legend span {
@@ -709,11 +716,11 @@ table.spec td.v {
     border: 1px solid rgba(15, 23, 42, 0.12);
 }
 
-/* 说明文字 */
+/* 说明文字：不低于 13px，颜色保持可读 */
 [data-testid="stCaptionContainer"] p {
-    font-size: 0.75rem !important;
-    color: var(--ink3) !important;
-    line-height: 1.6 !important;
+    font-size: 0.83rem !important;
+    color: var(--ink4) !important;
+    line-height: 1.62 !important;
 }
 [data-testid="stCaptionContainer"] strong { color: var(--ink2) !important; font-weight: 600; }
 
@@ -753,20 +760,20 @@ hr, [data-testid="stDivider"] hr {
     letter-spacing: 0 !important;
 }
 .stMarkdown h2, [data-testid="stMarkdownContainer"] h2 {
-    font-size: 1.15rem !important;
+    font-size: 1.2rem !important;
     font-weight: 600 !important;
     margin: 0 0 0.7rem 0 !important;
 }
 .stMarkdown h3, [data-testid="stMarkdownContainer"] h3 {
-    font-size: 1rem !important;
+    font-size: 1.1rem !important;
     font-weight: 600 !important;
     margin: 0 0 0.6rem 0 !important;
 }
 .stMarkdown h4, [data-testid="stMarkdownContainer"] h4 {
-    font-size: 0.86rem !important;
+    font-size: 1rem !important;
     font-weight: 600 !important;
     color: var(--ink2) !important;
-    letter-spacing: 0.01em !important;
+    letter-spacing: 0 !important;
     margin: 1.05rem 0 0.5rem 0 !important;
 }
 .stMarkdown p, .stMarkdown li,
@@ -797,13 +804,13 @@ table.spec.side td.k { width: 40%; }
 .updatemenu-button text {
     fill: var(--ink2) !important;
     font-family: var(--sans) !important;
-    font-size: 11px !important;
-    letter-spacing: 0.04em;
+    font-size: 12px !important;
+    letter-spacing: 0.01em;
 }
 .slider-container .slider-group .slider-label {
-    font-family: var(--mono) !important;
-    font-size: 10.5px !important;
-    fill: var(--ink3) !important;
+    font-family: var(--sans) !important;
+    font-size: 11.5px !important;
+    fill: var(--ink4) !important;
 }
 [data-testid="stPlotlyChart"]:hover .modebar { opacity: 1; }
 [data-testid="stPlotlyChart"] .modebar-btn path { fill: var(--ink3) !important; }
@@ -826,25 +833,25 @@ table.spec.side td.k { width: 40%; }
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    padding: 5px 11px;
+    padding: 6px 12px;
     border: 1px solid var(--rule);
     border-radius: 2px;
     background: var(--paper2);
-    color: var(--ink3);
-    font-size: 0.7rem;
+    color: var(--ink4);
+    font-size: 0.84rem;
     font-weight: 600;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.01em;
 }
 .steps .step b {
-    font-family: var(--mono);
-    font-size: 0.64rem;
-    color: #94a3b8;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink4);
 }
 .steps .step.done { background: var(--paper3); color: var(--ink2); }
 .steps .step.done b { color: var(--ink3); }
 .steps .step.on { border-color: var(--ink); color: var(--ink); }
 .steps .step.on b { color: var(--accent); }
-.steps i { font-style: normal; font-family: var(--mono); color: var(--rule); }
+.steps i { font-style: normal; font-size: 0.8rem; color: #cbd5e1; }
 
 .st-key-modecard1, .st-key-modecard2, .st-key-modecard3,
 .st-key-modecard9, .st-key-paramcard {
@@ -854,17 +861,30 @@ table.spec.side td.k { width: 40%; }
     padding: 16px 18px 14px 18px !important;
     margin-bottom: 14px;
 }
+/* 模式卡示意图：与卡内文字同宽，16:9 统一比例，四张卡对齐 */
+[class*="st-key-modecard"] [data-testid="stImage"] { margin: 0 0 12px 0; }
+[class*="st-key-modecard"] [data-testid="stImage"] img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    height: auto;
+    object-fit: cover;
+    object-position: center 50%;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+}
 .mode-desc {
-    font-size: 0.82rem;
+    font-size: 0.9rem;
     color: var(--ink2);
-    line-height: 1.62;
+    line-height: 1.65;
     margin: 2px 0 10px 0;
 }
 .mode-spec {
-    font-family: var(--mono);
-    font-size: 0.73rem;
-    color: var(--ink3);
-    letter-spacing: 0.04em;
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.86rem;
+    color: var(--ink4);
+    letter-spacing: 0;
     margin-bottom: 14px;
 }
 
@@ -876,7 +896,7 @@ table.spec.side td.k { width: 40%; }
 """
 st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
 
-FONT = "Inter, 'Microsoft YaHei', 'Segoe UI', sans-serif"
+FONT = "'Microsoft YaHei', 'Segoe UI', Arial, 'Noto Sans SC', sans-serif"
 PLOTLY_CONFIG = {"displaylogo": False, "scrollZoom": True}
 N_GRID = 41
 
@@ -922,6 +942,14 @@ ABAQUS_PRESETS = {
 ABAQUS_IMAGES = {k: v["image"] for k, v in ABAQUS_PRESETS.items()}
 
 ABAQUS_TOL_DEG = 1.0     # 铺层角度偏差在此范围内视为同一铺层
+
+# 模式卡示意图：图片自带编号徽标已裁掉，标题统一由卡片文字给出。
+MODE_IMAGES = {
+    "无人机机翼蒙皮": "mode_m1_uav.png",
+    "新能源电池包上盖": "mode_m2_ev.png",
+    "航天器太阳能帆板": "mode_m3_solar.png",
+}
+CUSTOM_MODE_IMAGE = "mode_m0_custom.png"
 
 # 场景预设：选择后联动滑块；用户之后仍可手动微调。
 SCENES = {
@@ -1281,19 +1309,19 @@ def figure_mode_3d(x, y, Z) -> go.Figure:
              for a, f in zip(amps, frames)]
 
     fig.update_layout(
-        height=400,
+        height=460,
         margin=dict(l=0, r=0, t=30, b=44),
         paper_bgcolor="white",
-        font=dict(family=FONT, size=12),
+        font=dict(family=FONT, size=13),
         updatemenus=[dict(type="buttons", direction="right", showactive=False,
                           x=0.0, y=1.0, xanchor="left", yanchor="bottom",
                           pad=dict(l=0, r=4, t=0, b=0),
                           bgcolor="#ffffff", bordercolor="#cbd5e1",
-                          font=dict(size=11, color="#334155"),
+                          font=dict(size=12, color="#334155"),
                           buttons=[play, pause])],
         sliders=[dict(active=len(amps) - 1, x=0.02, y=-0.02, len=0.96,
-                      currentvalue=dict(prefix="变形幅值 ", font=dict(size=11)),
-                      font=dict(size=10),
+                      currentvalue=dict(prefix="变形幅值 ", font=dict(size=12)),
+                      font=dict(size=11),
                       bgcolor="#f8fafc", bordercolor="#e2e8f0",
                       tickcolor="#94a3b8", steps=steps)],
         scene=dict(
@@ -1322,31 +1350,31 @@ def figure_compare(base_ncr: float, ncr: float, target: float) -> go.Figure:
                     line=dict(color="#0f172a", width=1)),
         text=[f"{base_ncr:,.0f}", f"{ncr:,.0f}"],
         textposition="outside", cliponaxis=False,
-        textfont=dict(size=13, color="#0f172a", family="Consolas, monospace"),
+        textfont=dict(size=13, color="#0f172a", family=FONT),
         hovertemplate="%{x}<br>Ncr = %{y:,.0f} N/m<extra></extra>",
     ))
     fig.add_hline(y=target, line=dict(color="#ef4444", dash="dash", width=1.5))
     fig.add_annotation(
         x=0.015, y=target, xref="paper", yref="y", showarrow=False,
         text=f"目标 Ncr = {target:,.0f} N/m", xanchor="left", yanchor="bottom",
-        font=dict(color="#ef4444", size=11),
+        font=dict(color="#ef4444", size=12),
         bgcolor="rgba(255,255,255,0.88)", borderpad=3,
     )
     fig.update_layout(
         height=372,
-        margin=dict(l=84, r=14, t=40, b=10),
+        margin=dict(l=96, r=14, t=40, b=10),
         paper_bgcolor="white",
-        font=dict(family=FONT, size=12),
+        font=dict(family=FONT, size=13),
         title=dict(text="同层数下的屈曲承载能力", x=0.0, y=0.97,
                    xanchor="left", yanchor="top",
-                   font=dict(size=12, color="#64748b")),
+                   font=dict(size=13, color="#475569")),
         showlegend=False,
         xaxis=dict(title=""),
         yaxis=dict(title=dict(text="临界屈曲载荷 Ncr (N/m)", standoff=10,
-                              font=dict(size=11, color="#64748b")),
-                   tickfont=dict(size=11),
+                              font=dict(size=12, color="#475569")),
+                   tickfont=dict(size=12, color="#475569"),
                    range=[0, max(values + [target]) * 1.20]),
-        hoverlabel=dict(font=dict(family=FONT)),
+        hoverlabel=dict(font=dict(family=FONT, size=12)),
     )
     fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0", zeroline=False)
     return fig
@@ -1424,10 +1452,10 @@ def layup_card(layup: str) -> None:
         <div style="background:#f1f5f9;border:1px solid #e2e8f0;
                     border-left:3px solid #2563eb;padding:12px 16px 13px 16px;
                     margin-bottom:12px;">
-          <div style="font-size:10px;letter-spacing:1.6px;color:#64748b;
-                      font-weight:700;text-transform:uppercase;
+          <div style="font-size:12px;letter-spacing:0;color:#475569;
+                      font-weight:600;
                       margin-bottom:5px;">推荐铺层序列</div>
-          <div style="font-family:'JetBrains Mono',Consolas,monospace;
+          <div style="font-family:Consolas,'Segoe UI Mono',monospace;
                       font-size:{size}px;font-weight:600;color:#0f172a;
                       line-height:1.45;word-break:normal;
                       overflow-wrap:normal;">{shown}</div>
@@ -1529,6 +1557,14 @@ def _figure_path(name: str):
         if p.exists():
             return p
     return None
+
+
+def _mode_image(scene: str | None) -> None:
+    """在模式卡顶部放一张示意图；图片缺失时静默跳过，不影响选择。"""
+    fname = MODE_IMAGES.get(scene or "", CUSTOM_MODE_IMAGE)
+    path = _figure_path(fname)
+    if path is not None:
+        st.image(str(path), width="stretch")
 
 
 def _same_stack(stack, n_plies: int, theta4) -> bool:
@@ -1760,8 +1796,12 @@ def _target_metric(preview: float) -> None:
     )
 
 
-def _spec_table(headers: list, rows: list) -> None:
-    """渲染 table.spec：首列作项目名，其余列作取值。"""
+def _spec_table(headers: list, rows: list,
+                widths: list | None = None) -> None:
+    """渲染 table.spec：首列作项目名，其余列作取值。
+
+    widths 传入每列百分比时用 colgroup 固定列宽，避免长结论列被挤到折行。
+    """
     head = "".join(f"<th>{escape(str(h))}</th>" for h in headers)
     body = "".join(
         f'<tr><td class="k">{escape(str(row[0]))}</td>'
@@ -1769,8 +1809,13 @@ def _spec_table(headers: list, rows: list) -> None:
         + "</tr>"
         for row in rows
     )
-    st.markdown(f'<table class="spec"><tr>{head}</tr>{body}</table>',
-                unsafe_allow_html=True)
+    colgroup = ""
+    if widths:
+        colgroup = "<colgroup>" + "".join(
+            f'<col style="width:{w}%">' for w in widths) + "</colgroup>"
+    st.markdown(
+        f'<table class="spec">{colgroup}<tr>{head}</tr>{body}</table>',
+        unsafe_allow_html=True)
 
 
 def _mode_switch(details: list | None = None) -> None:
@@ -1852,6 +1897,7 @@ def page_mode() -> None:
         desc = (cfg["subtitle"].partition(" · ")[2] or cfg["subtitle"]).strip()
         with (left if i % 2 == 0 else right):
             with st.container(key=f"modecard{i + 1}"):
+                _mode_image(name)
                 st.markdown(
                     f'<div class="card-head"><span class="card-idx">M{i + 1}</span>'
                     f'<span class="card-title">{name}</span></div>'
@@ -1867,6 +1913,7 @@ def page_mode() -> None:
                     _goto("params")
 
     with (right if len(presets) % 2 else left, st.container(key="modecard9")):
+        _mode_image(None)
         st.markdown(
             '<div class="card-head"><span class="card-idx">M0</span>'
             '<span class="card-title">自定义工况</span></div>'
@@ -2519,7 +2566,7 @@ with tab3:
                 "Ncr (N/m)": "—",
                 "模态": "—",
                 "相对差异": "—",
-                "结论": "不适用：D16 / D26 ≠ 0，特殊正交异性假设不成立",
+                "结论": "不适用：D16 / D26 ≠ 0",
             })
 
         cmp_ab = aba_compare(res, nx_cur, ny_cur)
@@ -2546,7 +2593,7 @@ with tab3:
             rows.append({
                 "分析方法": "ABAQUS 线性摄动（S4R, Buckle）",
                 "Ncr (N/m)": f"{ref['ncr']:,.1f}",
-                "模态": "m = 1, n = 1（云图中心单波）",
+                "模态": "m = 1, n = 1",
                 "相对差异": ("—" if delta is None
                              else f"{delta:+.2f}%（非验证误差）"),
                 "结论": ABA_STATE["conditional"],
@@ -2556,6 +2603,7 @@ with tab3:
             ["分析方法", "Ncr (N/m)", "模态", "相对差异", "结论"],
             [[row["分析方法"], row["Ncr (N/m)"], row["模态"],
               row["相对差异"], row["结论"]] for row in rows],
+            widths=[23, 13, 19, 17, 28],
         )
 
         if cmp_ab["state"] == "no_case":
