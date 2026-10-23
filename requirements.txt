@@ -14,6 +14,7 @@ scikit-learn==1.9.1     # 随机森林代理模型
 matplotlib==3.11.2      # 绘图
 streamlit==1.66.0       # Web 交互界面（app.py）
 plotly==7.1.0           # 3D 屈曲波形 / 柱状对比图（app.py）
+fpdf2==2.8.9            # 设计方案报告 PDF 导出（app.py）
 
 # ---------------- 上述库的传递依赖 ----------------
 about-time==4.2.1
@@ -25,6 +26,7 @@ cma==4.5.0
 contourpy==1.4.0
 cycler==0.12.1
 Deprecated==3.0.0
+defusedxml==0.7.1
 fonttools==4.67.0
 graphemeu==0.7.2
 joblib==1.6.0
