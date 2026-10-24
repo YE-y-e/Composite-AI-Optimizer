@@ -888,6 +888,18 @@ table.spec.side td.k { width: 40%; }
     color: var(--ink4);
     font-size: 0.82rem;
 }
+
+/* 主案例（整行）与拓展场景（三列）的分组 */
+.mode-group {
+    margin: 20px 0 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    font-size: 0.86rem;
+    color: var(--ink4);
+    letter-spacing: 0.04em;
+}
+.st-key-modecard1 .card-title { font-size: 1.1rem; }
+.st-key-modecard1 [data-testid="stImage"] { margin: 0; }
 .mode-desc {
     font-size: 0.9rem;
     color: var(--ink2);
@@ -2000,11 +2012,42 @@ def page_mode() -> None:
     st.caption("选一个场景进下一步；算完觉得不行，返回改载荷重算就行。")
 
     presets = [(k, v) for k, v in SCENES.items() if v["preset"] is not None]
-    left, right = st.columns(2, gap="medium")
-    for i, (name, cfg) in enumerate(presets):
+    hero_name, hero_cfg = presets[0]
+    hero = hero_cfg["preset"]
+    hero_desc = (hero_cfg["subtitle"].partition(" · ")[2]
+                 or hero_cfg["subtitle"]).strip()
+
+    # 主案例：整行宽度的核心卡片
+    with st.container(key="modecard1"):
+        img_col, body_col = st.columns([1, 1.05], gap="medium",
+                                        vertical_alignment="center")
+        with img_col:
+            _mode_image(hero_name)
+        with body_col:
+            st.markdown(
+                f'<div class="card-head"><span class="card-idx">M1</span>'
+                f'<span class="card-title">{hero_name}</span>'
+                f'<span class="card-aside">核心工程原型</span></div>'
+                f'<div class="mode-desc">{hero_desc}</div>'
+                f'<div class="mode-spec">Nx {hero["nx"]:.0f} · Ny {hero["ny"]:.0f} N/m'
+                f' · SF {hero["sf"]:.2f}</div>'
+                '<div class="mode-desc">真实机翼蒙皮的气动面压与翼肋支撑，'
+                '抽象为四边简支方板（SS1）的代表性工况。</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("选择此预设", key="pick_preset_0", width="stretch"):
+                st.session_state["calc_mode"] = "preset"
+                st.session_state["scene"] = hero_name
+                _set_load(int(hero["nx"]), int(hero["ny"]), float(hero["sf"]))
+                _goto("params")
+
+    # 拓展场景：三个较小的卡片并排
+    st.markdown('<div class="mode-group">拓展场景</div>', unsafe_allow_html=True)
+    cols = st.columns(3, gap="medium")
+    for i, (name, cfg) in enumerate(presets[1:], start=1):
         p = cfg["preset"]
         desc = (cfg["subtitle"].partition(" · ")[2] or cfg["subtitle"]).strip()
-        with (left if i % 2 == 0 else right):
+        with cols[i - 1]:
             with st.container(key=f"modecard{i + 1}"):
                 _mode_image(name)
                 st.markdown(
@@ -2021,21 +2064,21 @@ def page_mode() -> None:
                     _set_load(int(p["nx"]), int(p["ny"]), float(p["sf"]))
                     _goto("params")
 
-    with (right if len(presets) % 2 else left, st.container(key="modecard9")):
-        _mode_image(None)
-        st.markdown(
-            '<div class="card-head"><span class="card-idx">M0</span>'
-            '<span class="card-title">自定义工况</span></div>'
-            '<div class="mode-desc">不套用预设，自行输入 Nx / Ny / SF；'
-            '层数与铺层角度由程序寻优。</div>'
-            '<div class="mode-spec">Nx / Ny / SF 可任意设定</div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("自定义输入", key="pick_custom", width="stretch"):
-            st.session_state["calc_mode"] = "custom"
-            st.session_state["scene"] = None
-            _set_load(500, 500, 1.5)
-            _goto("params")
+    with cols[2]:
+        with st.container(key="modecard9"):
+            _mode_image(None)
+            st.markdown(
+                '<div class="card-head"><span class="card-idx">M0</span>'
+                '<span class="card-title">自定义工况</span></div>'
+                '<div class="mode-desc">不套用预设，自行输入 Nx / Ny / SF。</div>'
+                '<div class="mode-spec">层数与铺层角度由程序寻优</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("自定义输入", key="pick_custom", width="stretch"):
+                st.session_state["calc_mode"] = "custom"
+                st.session_state["scene"] = None
+                _set_load(500, 500, 1.5)
+                _goto("params")
 
     st.divider()
     _mode_switch()
@@ -2516,11 +2559,15 @@ with tab1:
             )
 
         if res["thinner"]:
-            st.caption(
-                f"减薄校核：若以角度优化替代纯 0° 基准来定层数，N = {res['thinner']['n']} 层"
-                f"（t = {res['thinner']['n'] * T_PLY:.2f} mm）即可满足，"
-                f"Ncr = {res['thinner']['ncr']:,.0f} N/m ≥ Ncr_target = {target:,.0f} N/m，"
-                f"较当前方案减薄 {res['thickness'] - res['thinner']['n'] * T_PLY:.2f} mm。"
+            _n_thin = int(res["thinner"]["n"])
+            _t_thin = _n_thin * T_PLY
+            _drop = (res["thickness"] - _t_thin) / res["thickness"] * 100.0
+            st.success(
+                f"**极限减重探索**：若接受无额外安全裕度（仅满足 SF = {res['sf']:.2f} "
+                f"的基本要求），采用相同角度族可进一步减薄至 {_n_thin} 层"
+                f"（{_t_thin:.2f} mm，Ncr = {res['thinner']['ncr']:,.0f} N/m），"
+                f"实现 {_drop:.1f}% 的结构减重。当前主推荐 {res['n_plies']} 层"
+                f"（{res['thickness']:.2f} mm）保留了更多的工程安全裕度。"
             )
 
         with st.expander("纯 0° 层数扫描明细（N = 4…20）"):
