@@ -1,4 +1,6 @@
-# AI 力学 · 复合材料层合板刚度预测与多目标优化
+<p align="center"><img src="figures/logo_mark.png" width="104" alt="纤层智构"></p>
+
+# 纤层智构 —— 轻量化复合材料铺层智能优化
 
 基于经典层合板理论（CLT）与机器学习代理模型，研究 **4 层对称铺层 `[θ1/θ2/θ2/θ1]s`** 的
 面内刚度 `Ex` 与弯曲刚度 `D11` 随铺层角度的变化规律，并进一步引入层数 `N` 完成
@@ -38,7 +40,10 @@ Final_Submission/
 │   ├── training_data.csv          # 500 组 LHS 样本
 │   ├── augmented_training_data.csv# 602 组（500 LHS + 100 边界 + 2 极值）
 │   ├── optimal_designs.csv        # v1 优化结果（纯角度，3 个解重合）
-│   └── optimal_designs_v2.csv     # v2 优化结果（含层数 N，真实权衡）
+│   ├── optimal_designs_v2.csv     # v2 优化结果（含层数 N，真实权衡）
+│   ├── model_Ex.pkl               # Ex 代理模型权重（随机森林，500 棵树）
+│   ├── model_D11.pkl              # D11 代理模型权重（随机森林，500 棵树）
+│   └── model_metadata.json        # 训练元数据（划分/种子/特征/R²/MSE）
 └── figures/                       # 全部图件
     ├── data_distribution.png      # Ex / D11 随角度变化云图
     ├── pareto_front.png           # v1 帕累托前沿（退化为单点）
@@ -57,6 +62,11 @@ Final_Submission/
 正文按「背景与意义 / 理论方法与算法 / 结果与分析 / 验证与可靠性 / 结论与展望」组织；
 第三章保留 3.1–3.6（3.6 为 Web 平台），第四章为验证章节（含 ABAQUS 交叉验证），
 文末按 GB/T 7714 列出 6 篇参考文献并在正文上标引用。正文用标准 Markdown 图片语法引入
+**代理模型权重文件（.pkl）与训练元数据已随包提供，评审专家可直接查看或验证报告中提到的精度指标。**
+对应文件为 `data/model_Ex.pkl`、`data/model_D11.pkl` 与 `data/model_metadata.json`，加载后可复算 `Ex` 的 R² = 0.9968（MSE 6.08）与 `D11` 的 R² = 0.9994（MSE 0.00027）。
+
+> 实测：按 `model_metadata.json` 记录的 `data_file`、特征组合与 `random_state = 42` 重新划分测试集，加载同一批 `.pkl` 复算，得 `Ex` R² = 0.996841、MSE = 6.07999，`D11` R² = 0.999352、MSE = 0.000268686，与元数据数值**完全一致**（差值 < 1e-9）。
+
 `figures/` 下的五张插图（`data_distribution.png`、`pareto_front_v2.png`、
 `ncr_comparison.png`、`app_preview.png`、`abaqus_mode.png`），统一编号为图 1–图 5。
 公式采用 LaTeX 语法（`$...$` / `$$...$$`），建议用 Typora、VS Code 或 Pandoc 等支持
@@ -132,6 +142,7 @@ python codes\plot_data.py
 python codes\augment_data.py
 
 # ⑤ 训练代理模型          ->  model_Ex.pkl、model_D11.pkl、model_metadata.json
+#                            （这三个文件已随包提供于 data/，无需重训即可核对指标）
 python codes\train_model.py augmented_training_data.csv
 
 # ⑥ 双目标优化（含层数 N） ->  pareto_front_v2.png、optimal_designs_v2.csv
@@ -207,7 +218,7 @@ python codes\Auto_Design.py 500 500 1.5
 >
 > | 取值 | 行为 | 耗时 |
 > |---|---|---|
-> | `APP_MODE=local` | 调用 `Auto_Design.py`，跑完整的层数扫描 + NSGA-II 寻优 + 强度校核 | 约 1 分钟（快速模式约 5 s） |
+> | `APP_MODE=local` | 调用 `Auto_Design.py`，跑完整的层数扫描 + NSGA-II 寻优 + 强度校核 | 约 1 分钟（快速模式约 10 s） |
 > | `APP_MODE=demo` | 只读取事先算好的离线预设算例，不运行 GA；未命中预设时退回纯 0° 估算并在页面标注 | 秒级 |
 > | 未设置 / 取值非法 | 按 `demo` 处理，页面顶部提示实际模式 | 秒级 |
 >
