@@ -18,6 +18,7 @@ import os
 import re
 import threading
 import time
+from base64 import b64encode
 from html import escape
 from pathlib import Path
 
@@ -171,10 +172,27 @@ footer { display: none !important; }
     border-radius: 2px;
     padding: 15px 20px 13px 20px;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 8px 18px;
     flex-wrap: wrap;
+}
+.masthead-left {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    min-width: 0;
+}
+/* 标识：白底小方砖压在深色报头上，位图为 128 px，显示 38 px */
+.masthead-logo {
+    width: 38px;
+    height: 38px;
+    padding: 3px;
+    box-sizing: content-box;
+    flex: none;
+    background: #ffffff;
+    border-radius: 3px;
+    display: block;
 }
 .masthead-brand {
     font-family: var(--heading);
@@ -1596,6 +1614,15 @@ def _figure_path(name: str):
     return None
 
 
+@st.cache_data(show_spinner=False, max_entries=1)
+def _logo_uri() -> str:
+    """报头标识：读 figures 下的位图并转成 data URI，找不到时返回空串。"""
+    path = _figure_path("logo_128.png")
+    if path is None:
+        return ""
+    return "data:image/png;base64," + b64encode(path.read_bytes()).decode("ascii")
+
+
 def _mode_image(scene: str | None) -> None:
     """在模式卡顶部放一张示意图；缺少图片时给占位提示，不影响选择。"""
     fname = MODE_IMAGES.get(scene or "", CUSTOM_MODE_IMAGE)
@@ -2308,10 +2335,16 @@ for _key, _default in (
     st.session_state.setdefault(_key, _default)
 
 # 报头：三个页面共用
+_logo_src = _logo_uri()
+_logo_html = (f'<img class="masthead-logo" src="{_logo_src}" alt="">'
+              if _logo_src else "")
 st.markdown(
     f"""
     <div class="masthead">
-      <div class="masthead-brand">复合材料铺层优化工作台</div>
+      <div class="masthead-left">
+        {_logo_html}
+        <div class="masthead-brand">复合材料铺层优化工作台</div>
+      </div>
       <div class="masthead-meta">CLT<span class="sep">/</span>Rayleigh-Ritz<span class="sep">/</span>NSGA-II<span class="sep">/</span>v{APP_VERSION}</div>
     </div>
     <div class="masthead-sub">四边简支方板 · T300/5208</div>
