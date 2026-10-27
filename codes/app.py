@@ -1,4 +1,4 @@
-"""复合材料铺层优化工作台（Streamlit + Plotly）。
+"""纤层智构 —— 轻量化复合材料铺层智能优化（Streamlit + Plotly）。
 
 运行模式由环境变量 APP_MODE 明确指定，不按操作系统自动猜测：
 
@@ -68,7 +68,7 @@ MODE_INVALID = bool(_raw_mode) and _raw_mode.lower() not in VALID_MODES
 
 # 页面与样式
 st.set_page_config(
-    page_title="复合材料铺层优化工作台",
+    page_title="纤层智构 · 轻量化复合材料铺层智能优化",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -2218,19 +2218,25 @@ def build_report_pdf(res: dict):
 
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_title("复合材料层合板屈曲铺层优化 - 设计方案报告")
+    pdf.set_title("纤层智构 · 轻量化复合材料铺层智能优化 - 设计方案报告")
     pdf.add_page()
     pdf.add_font("CJK", "", str(font))
     fam = "CJK"
 
+    # 标识（缺失时跳过，不影响出报告）
+    _logo_pdf = _figure_path("logo_mark_512.png")
+    if _logo_pdf is not None:
+        pdf.image(str(_logo_pdf), x=(pdf.w - 16) / 2, y=pdf.get_y() + 1, w=16)
+        pdf.ln(20)
+
     # 标题
     pdf.set_font(fam, size=18)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(0, 12, "复合材料层合板屈曲铺层优化",
+    pdf.cell(0, 12, "纤层智构",
              new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.set_font(fam, size=11)
     pdf.set_text_color(100, 116, 139)
-    pdf.cell(0, 8, "设计方案报告",
+    pdf.cell(0, 8, "轻量化复合材料铺层智能优化 · 设计方案报告",
              new_x="LMARGIN", new_y="NEXT", align="C")
     pdf.ln(2)
     pdf.set_draw_color(203, 213, 225)
@@ -2343,11 +2349,11 @@ st.markdown(
     <div class="masthead">
       <div class="masthead-left">
         {_logo_html}
-        <div class="masthead-brand">复合材料铺层优化工作台</div>
+        <div class="masthead-brand">纤层智构</div>
       </div>
       <div class="masthead-meta">CLT<span class="sep">/</span>Rayleigh-Ritz<span class="sep">/</span>NSGA-II<span class="sep">/</span>v{APP_VERSION}</div>
     </div>
-    <div class="masthead-sub">四边简支方板 · T300/5208</div>
+    <div class="masthead-sub">轻量化复合材料铺层智能优化 · 四边简支方板 T300/5208</div>
     """,
     unsafe_allow_html=True,
 )
