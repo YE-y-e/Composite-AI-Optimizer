@@ -1,0 +1,3333 @@
+"""纤层智构 —— 轻量化复合材料铺层智能优化（Streamlit + Plotly）。
+
+运行模式由环境变量 APP_MODE 明确指定，不按操作系统自动猜测：
+
+    APP_MODE=local   调用 Auto_Design.py 跑完整的 NSGA-II 寻优（约 1 分钟）
+    APP_MODE=demo    只读取事先算好的离线预设算例，不运行 GA（默认）
+
+未设置或取值非法时一律按 demo 处理，避免部署环境意外触发耗时优化。
+
+界面按「选择模式 → 参数设置 → 计算结果」三步走，结果页分设计结果、失稳模态、
+性能对比三个页签。计算、曲线和校核结论都来自 angle_optimize.py 与
+Auto_Design.py 的同一套结果，这里只负责展示。
+"""
+
+import contextlib
+import io
+import json
+import os
+import re
+import shutil
+import threading
+import time
+from base64 import b64encode
+from html import escape
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+try:                      # PDF 导出依赖；缺失时其余功能照常运行
+    from fpdf import FPDF
+    HAS_FPDF = True
+except ImportError:       # pragma: no cover
+    FPDF = None
+    HAS_FPDF = False
+
+import abaqus_fe as afe
+import Auto_Design as ad
+from angle_optimize import (
+    A_PLATE,
+    B_PLATE,
+    DENSITY,
+    E1,
+    E2,
+    G12,
+    M_VERIFY,
+    T_PLY,
+    V12,
+    BucklingSolver,
+    navier_orthotropic,
+)
+
+# 环境判断
+APP_VERSION = "1.0.0"      # 设计记录、PDF 与报头共用同一个版本号
+VALID_MODES = ("local", "demo")
+DEFAULT_MODE = "demo"      # 与部署方式一致：不配置时不跑耗时优化
+
+
+def _resolve_mode() -> str:
+    """读取 APP_MODE，只接受 local / demo；缺失或非法一律退回 demo。"""
+    raw = os.environ.get("APP_MODE", "").strip().lower()
+    return raw if raw in VALID_MODES else DEFAULT_MODE
+
+
+APP_MODE = _resolve_mode()                 # "local" | "demo"
+IS_DEMO = APP_MODE == "demo"
+_raw_mode = os.environ.get("APP_MODE", "").strip()
+MODE_INVALID = bool(_raw_mode) and _raw_mode.lower() not in VALID_MODES
+
+# 页面与样式
+st.set_page_config(
+    page_title="纤层智构 · 轻量化复合材料铺层智能优化",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    '<style> .stApp { background-color: #FAFAFA !important; color: #0f172a !important; } </style>',
+    unsafe_allow_html=True,
+)
+
+if MODE_INVALID:
+    st.warning(
+        f'环境变量 APP_MODE = "{_raw_mode}" 不是合法取值（只允许 local / demo），'
+        f"已按 {APP_MODE} 运行。"
+    )
+
+
+def _local_run() -> bool:
+    """本会话是否已从演示模式显式切换到本机完整计算。
+
+    勾选框在参数页渲染时以它为准确值；到了结果页勾选框不再渲染，
+    Streamlit 会清理未渲染控件的状态，此时读另存的那份，
+    否则进结果页后会悄悄退回演示分支。
+    """
+    if "run_local" in st.session_state:
+        return bool(st.session_state["run_local"])
+    return bool(st.session_state.get("_local_run_saved", False))
+
+
+def _remember_mode() -> None:
+    """勾选框变化时把选择另存，使其跨页面/重跑保持。"""
+    st.session_state["_local_run_saved"] = bool(
+        st.session_state.get("run_local", False)
+    )
+
+
+def _remember_tab() -> None:
+    """切换页签时另存一份，重跑后仍停在同一页。"""
+    cur = st.session_state.get("_tabs3")
+    if cur:
+        st.session_state["_tabs3_saved"] = cur
+
+
+def _demo_now() -> bool:
+    """当前真实执行路径是否走演示分支（离线算例 / 纯 0° 估算）。"""
+    return IS_DEMO and not _local_run()
+
+
+def mode_text() -> str:
+    """页面上显示的运行模式，与真实执行路径保持一致。"""
+    if not IS_DEMO:
+        return "local"
+    return "local（本会话切换）" if _local_run() else "demo"
+
+CSS = """
+/* 全部使用本机字体：不依赖在线字体服务，断网也能正常显示 */
+:root {
+    color-scheme: light;
+    --ink: #0f172a;
+    --ink2: #334155;
+    --ink3: #64748b;
+    --ink4: #475569;
+    --paper: #f8fafc;
+    --paper2: #ffffff;
+    --paper3: #f1f5f9;
+    --rule: #e2e8f0;
+    --accent: #2563eb;
+    --accent-deep: #1d4ed8;
+    --accent-light: #eff6ff;
+    --accent2: #f97316;
+    --ok: #10b981;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    /* 中文统一雅黑，英文与数字走系统无衬线；标题与正文同一字体体系 */
+    --sans: 'Microsoft YaHei', 'Microsoft YaHei UI', 'Segoe UI', Arial,
+            'Noto Sans SC', 'PingFang SC', system-ui, -apple-system, sans-serif;
+    --heading: var(--sans);
+    /* 等宽只留给铺层序列、矩阵符号这类技术记号 */
+    --mono: 'Consolas', 'Cascadia Mono', 'Segoe UI Mono', monospace;
+}
+
+html, body, [class*="css"] {
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+.stApp { background: var(--paper) !important; color: var(--ink) !important; }
+
+/* 保留框架骨架，只隐藏 Deploy / 菜单 / 页脚 */
+[data-testid="stHeader"] { background: transparent; border-bottom: none; height: auto; }
+[data-testid="stToolbar"] { background: transparent; }
+[data-testid="stDecoration"] { display: none; }
+[data-testid="stAppDeployButton"],
+[data-testid="stMainMenu"],
+#MainMenu,
+[data-testid="stToolbarActions"],
+footer { display: none !important; }
+
+/* 展开 / 折叠箭头必须可见可点 */
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 1000000;
+}
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapseButton"] button {
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+
+.block-container {
+    max-width: 1240px;
+    padding: 1.3rem 1.4rem 3.2rem 1.4rem;
+}
+
+/* 报头：深色版画式标题栏 */
+.masthead {
+    background: #0f172a;
+    border: 1px solid #0f172a;
+    border-radius: 2px;
+    padding: 15px 20px 13px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 18px;
+    flex-wrap: wrap;
+}
+.masthead-left {
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    min-width: 0;
+}
+/* 标识：白底小方砖压在深色报头上，位图为 128 px，显示 38 px */
+.masthead-logo {
+    width: 38px;
+    height: 38px;
+    padding: 3px;
+    box-sizing: content-box;
+    flex: none;
+    background: #ffffff;
+    border-radius: 3px;
+    display: block;
+}
+.masthead-brand {
+    font-family: var(--heading);
+    font-size: 1.45rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: #ffffff;
+    line-height: 1.32;
+}
+.masthead-meta {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    text-transform: none;
+    color: #cbd5e1;
+    white-space: nowrap;
+}
+.masthead-meta .sep { color: #64748b; margin: 0 0.55rem; }
+.masthead-sub {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    letter-spacing: 0.03em;
+    text-transform: none;
+    color: var(--ink4);
+    margin: 8px 0 20px 2px;
+}
+
+/* 版块编号与标题 */
+.sec-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: var(--ink4);
+    margin: 0 0 8px 0;
+}
+.sec-label b {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    background: var(--accent-light);
+    color: var(--accent);
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+.sec-title {
+    font-family: var(--heading);
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--ink);
+    line-height: 1.4;
+    margin: 0 0 12px 0;
+}
+.card-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 14px;
+}
+.card-idx {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    background: var(--accent-light);
+    color: var(--accent);
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+.card-title { font-size: 1rem; font-weight: 600; color: var(--ink); letter-spacing: 0; }
+.card-aside {
+    margin-left: auto;
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: var(--ink4);
+    white-space: nowrap;
+}
+
+h1, h2, h3, h4, h5 { color: var(--ink); letter-spacing: 0; }
+h3 { font-size: 1.1rem; font-weight: 600; margin: 0.1rem 0 0.6rem 0; }
+h4 { font-size: 1rem; font-weight: 600; color: var(--ink2); margin: 1rem 0 0.5rem 0; }
+p, li, label, span { line-height: 1.68; }
+
+/* 侧边栏 */
+[data-testid="stSidebar"] {
+    background: var(--paper2);
+    border-right: 1px solid var(--rule);
+    box-shadow: none;
+}
+[data-testid="stSidebarUserContent"] { padding: 1.3rem 1.15rem 2.2rem 1.15rem; }
+.side-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+    color: var(--ink4);
+    margin: 0 0 10px 0;
+}
+.side-head b {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    background: var(--accent-light);
+    color: var(--accent);
+    padding: 2px 5px;
+    border-radius: 3px;
+    letter-spacing: 0;
+}
+.side-spec { margin: 2px 0 4px 0; }
+.side-spec div {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--paper3);
+    font-size: 0.86rem;
+}
+.side-spec div:last-child { border-bottom: none; }
+.side-spec span { color: var(--ink4); letter-spacing: 0; white-space: nowrap; }
+.side-spec em {
+    font-style: normal;
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    font-weight: 500;
+    text-align: right;
+}
+
+/* 控件标签：14px 以上，加粗，不改变大小写（单位不可大写） */
+[data-testid="stWidgetLabel"] p,
+.stSlider label p,
+.stSelectbox label p,
+.stCheckbox label p {
+    font-size: 0.9rem !important;
+    font-weight: 500 !important;
+    letter-spacing: 0 !important;
+    text-transform: none;
+    color: var(--ink2) !important;
+    margin-bottom: 2px !important;
+}
+[data-testid="stCheckbox"] label p,
+[data-testid="stRadio"] label p {
+    font-size: 0.9rem !important;
+    letter-spacing: 0 !important;
+    text-transform: none;
+    color: var(--ink2) !important;
+    font-weight: 500 !important;
+}
+[data-testid="stSlider"] [data-testid="stThumbValue"],
+[data-testid="stSliderThumbValue"],
+[data-testid="stSlider"] output {
+    font-family: var(--sans) !important;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    color: var(--ink) !important;
+}
+[data-testid="stSlider"] [role="slider"] {
+    background: var(--accent) !important;
+    border-color: var(--accent) !important;
+    box-shadow: none !important;
+}
+
+/* 表单：去掉 Streamlit 默认圆角白卡，侧边栏本身即为面板 */
+[data-testid="stForm"] {
+    border: none !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    padding: 0 !important;
+}
+
+/* 下拉框：直角、细边、聚焦主题色 */
+[data-testid="stSelectbox"] [role="group"],
+[data-testid="stSidebar"] [data-baseweb="select"] > div {
+    background: var(--paper) !important;
+    border: 1px solid var(--rule) !important;
+    border-radius: 3px !important;
+    min-height: 40px;
+    box-shadow: none !important;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+[data-testid="stSelectbox"] [role="group"]:hover,
+[data-testid="stSidebar"] [data-baseweb="select"] > div:hover {
+    background: var(--paper) !important;
+    border-color: #cbd5e1 !important;
+}
+[data-testid="stSelectbox"] [role="group"]:focus-within,
+[data-testid="stSidebar"] [data-baseweb="select"] > div:focus-within {
+    background: var(--paper2) !important;
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12) !important;
+}
+[data-testid="stSelectbox"] input,
+[data-testid="stSelectbox"] [role="group"] span,
+[data-testid="stSidebar"] [data-baseweb="select"] span { color: var(--ink) !important; }
+[data-baseweb="popover"], [data-baseweb="menu"] {
+    background: var(--paper2) !important;
+    border: 1px solid var(--rule) !important;
+    border-radius: 3px !important;
+    box-shadow: 0 12px 28px -10px rgba(15, 23, 42, 0.22) !important;
+}
+[data-baseweb="popover"] * { color: var(--ink) !important; }
+
+/* 主按钮：实心主题色，直角，无渐变无位移 */
+[data-testid="stBaseButton-primaryFormSubmit"],
+[data-testid="stBaseButton-primary"],
+.stButton > button[kind="primary"] {
+    background: var(--accent) !important;
+    border: 1px solid var(--accent-deep) !important;
+    border-radius: 3px !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 0.92rem !important;
+    letter-spacing: 0.02em;
+    padding: 0.66rem 1rem !important;
+    box-shadow: none !important;
+    transition: background 0.15s ease;
+}
+[data-testid="stBaseButton-primaryFormSubmit"]:hover,
+[data-testid="stBaseButton-primary"]:hover,
+.stButton > button[kind="primary"]:hover {
+    background: var(--accent-deep) !important;
+    transform: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+}
+[data-testid="stBaseButton-primaryFormSubmit"] *,
+[data-testid="stBaseButton-primary"] * { color: #ffffff !important; }
+
+/* 次级按钮（PDF 导出）：描边样式 */
+[data-testid="stDownloadButton"] button {
+    width: 100%;
+    background: var(--paper2) !important;
+    border: 1px solid var(--ink) !important;
+    border-radius: 3px !important;
+    color: var(--ink) !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    letter-spacing: 0.02em;
+    padding: 0.58rem 1rem !important;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+[data-testid="stDownloadButton"] button:hover {
+    background: var(--ink) !important;
+    color: #ffffff !important;
+}
+[data-testid="stDownloadButton"] button:hover * { color: #ffffff !important; }
+
+/* 结果卡片 */
+.st-key-card1, .st-key-card2, .st-key-card3 {
+    background: var(--paper2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 20px 22px 22px 22px !important;
+    box-shadow: none;
+}
+.st-key-card1 h3, .st-key-card2 h3, .st-key-card3 h3 {
+    font-size: 1rem;
+    letter-spacing: 0;
+}
+
+/* 页签：下划线式 */
+[role="tablist"] {
+    gap: 26px !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    border-bottom: 1px solid var(--rule) !important;
+}
+[data-testid="stTab"] {
+    height: auto !important;
+    padding: 0 0 9px 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    color: var(--ink4) !important;
+    font-weight: 600 !important;
+    font-size: 0.92rem !important;
+    letter-spacing: 0.01em !important;
+    border-bottom: 2px solid transparent !important;
+    box-shadow: none !important;
+}
+[data-testid="stTab"]:hover { color: var(--ink) !important; background: transparent !important; }
+[data-testid="stTab"][aria-selected="true"] {
+    color: var(--ink) !important;
+    background: transparent !important;
+    border-bottom-color: var(--accent) !important;
+    box-shadow: none !important;
+}
+[data-testid="stTabHighlight"],
+[data-testid="stTabBorder"],
+[data-baseweb="tab-highlight"],
+[data-baseweb="tab-border"],
+.react-aria-SelectionIndicator,
+[role="tablist"]::after { display: none !important; }
+
+/* 指标条（自定义 HTML） */
+.metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 4px 0 6px 0;
+}
+.metric { background: var(--paper2); padding: 13px 15px 14px 15px; }
+.metric-l {
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--ink4);
+    margin-bottom: 6px;
+}
+.metric-v {
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--ink);
+    line-height: 1.24;
+    letter-spacing: 0;
+}
+.metric-v small {
+    font-family: var(--sans);
+    font-size: 0.84rem;
+    font-weight: 500;
+    color: var(--ink4);
+    margin-left: 4px;
+    letter-spacing: 0;
+}
+.metric-n { font-size: 0.82rem; color: var(--ink4); margin-top: 5px; line-height: 1.5; }
+.metric.main .metric-v { font-size: 1.68rem; }
+.metric.main .metric-v small { font-size: 0.9rem; }
+
+/* 原生 st.metric（保留兼容） */
+[data-testid="stMetric"] {
+    background: var(--paper2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 12px 15px !important;
+}
+[data-testid="stMetricValue"] {
+    font-family: var(--sans) !important;
+    font-variant-numeric: tabular-nums;
+    font-size: 1.4rem !important;
+    font-weight: 600 !important;
+    color: var(--ink) !important;
+    letter-spacing: -0.01em;
+}
+[data-testid="stMetricLabel"] p {
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+    text-transform: none;
+    color: var(--ink4) !important;
+}
+[data-testid="stMetricDelta"] { font-family: var(--sans) !important; font-variant-numeric: tabular-nums; font-size: 0.86rem !important; }
+
+/* 表格 */
+table.spec {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 2px 0 4px 0;
+}
+table.spec th {
+    background: var(--paper3);
+    text-align: left;
+    font-size: 0.84rem;
+    font-weight: 600;
+    letter-spacing: 0;
+    /* 表头里会出现 Ncr (N/m) 这类单位，不能转大写 */
+    text-transform: none;
+    color: var(--ink4);
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+}
+table.spec td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink2);
+    vertical-align: top;
+    line-height: 1.62;
+}
+table.spec tr:last-child td { border-bottom: none; }
+table.spec td.k {
+    color: var(--ink4);
+    width: 24%;
+    white-space: nowrap;
+    font-size: 0.9rem;
+    letter-spacing: 0;
+}
+table.spec td.v {
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+    font-weight: 500;
+    font-size: 0.92rem;
+}
+
+[data-testid="stTable"] {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+}
+[data-testid="stTable"] table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+[data-testid="stTable"] thead th {
+    background: var(--paper3) !important;
+    color: var(--ink4) !important;
+    font-size: 0.84rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+    text-transform: none;
+    padding: 9px 12px !important;
+    border-bottom: 1px solid var(--rule) !important;
+    text-align: left !important;
+}
+[data-testid="stTable"] tbody td {
+    padding: 10px 12px !important;
+    border-bottom: 1px solid var(--rule) !important;
+    color: var(--ink2) !important;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.9rem !important;
+}
+[data-testid="stTable"] tbody tr:last-child td { border-bottom: none !important; }
+
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--rule) !important;
+    border-radius: 3px !important;
+    overflow: hidden;
+    box-shadow: none !important;
+}
+
+/* 折叠面板 */
+[data-testid="stExpander"] {
+    border: 1px solid var(--rule) !important;
+    border-radius: 3px !important;
+    background: var(--paper2) !important;
+    box-shadow: none !important;
+}
+[data-testid="stExpander"] summary {
+    font-size: 0.87rem !important;
+    font-weight: 600 !important;
+    color: var(--ink2) !important;
+    letter-spacing: 0.02em;
+}
+[data-testid="stExpander"] summary:hover { color: var(--ink) !important; }
+
+/* 提示条：白底 + 左侧细色条 */
+[data-testid="stAlert"] {
+    border: 1px solid var(--rule) !important;
+    border-left: 3px solid var(--ink3) !important;
+    border-radius: 2px !important;
+    background: var(--paper2) !important;
+    box-shadow: none !important;
+    padding: 11px 15px !important;
+}
+[data-testid="stAlert"] p { font-size: 0.9rem !important; line-height: 1.68; color: var(--ink2) !important; }
+[data-testid="stAlert"] svg { display: none; }
+[data-testid="stAlert"]:has([data-testid="stAlertContentSuccess"]) { border-left-color: var(--ok) !important; }
+[data-testid="stAlert"]:has([data-testid="stAlertContentWarning"]) { border-left-color: var(--warn) !important; }
+[data-testid="stAlert"]:has([data-testid="stAlertContentError"]) { border-left-color: var(--danger) !important; }
+[data-testid="stAlert"]:has([data-testid="stAlertContentInfo"]) { border-left-color: var(--accent) !important; }
+
+/* 状态框：压成单行标记，不占整行宽度 */
+[data-testid="stStatusWidget"], [data-testid="stStatus"] {
+    display: inline-flex !important;
+    width: auto !important;
+    max-width: 100%;
+    border: 1px solid var(--rule) !important;
+    border-radius: 2px !important;
+    background: var(--paper2) !important;
+    box-shadow: none !important;
+    padding: 4px 10px !important;
+    margin: 0 0 6px 0 !important;
+}
+[data-testid="stStatusWidget"] p,
+[data-testid="stStatus"] p {
+    font-size: 0.85rem !important;
+    color: var(--ink4) !important;
+    line-height: 1.55 !important;
+}
+[data-testid="stStatusWidget"] svg, [data-testid="stStatus"] svg {
+    width: 13px !important;
+    height: 13px !important;
+}
+
+/* 状态条外层容器不要撑满 */
+[data-testid="stStatusWidgetContainer"],
+.element-container:has(> [data-testid="stStatusWidget"]) { width: auto !important; }
+
+/* 引用条 */
+.note {
+    background: var(--paper2);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    padding: 10px 14px;
+    font-size: 0.9rem;
+    color: var(--ink2);
+    line-height: 1.68;
+    margin: 4px 0 8px 0;
+}
+
+/* 铺层图例 */
+.layup-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    align-items: center;
+    font-size: 0.82rem;
+    color: var(--ink4);
+    letter-spacing: 0.03em;
+    margin: 2px 0 6px 0;
+}
+.layup-legend span {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 1px;
+    margin-right: 5px;
+    vertical-align: middle;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+/* 说明文字：不低于 13px，颜色保持可读 */
+[data-testid="stCaptionContainer"] p {
+    font-size: 0.83rem !important;
+    color: var(--ink4) !important;
+    line-height: 1.62 !important;
+}
+[data-testid="stCaptionContainer"] strong { color: var(--ink2) !important; font-weight: 600; }
+
+/* 分隔线 */
+hr, [data-testid="stDivider"] hr {
+    border: none !important;
+    border-top: 1px solid var(--rule) !important;
+    margin: 18px 0 !important;
+    background: transparent !important;
+}
+
+/* Plotly 融入卡片 */
+[data-testid="stPlotlyChart"] { background: transparent !important; border: none !important; box-shadow: none !important; }
+[data-testid="stPlotlyChart"] .main-svg { background: transparent !important; }
+[data-testid="stPlotlyChart"] .modebar {
+    background: transparent !important;
+    opacity: 0.4;
+    transition: opacity 0.15s ease;
+}
+
+.stApp p, .stApp li { color: var(--ink2); }
+
+/* 压过 Streamlit 自带字体与标题尺寸 */
+.stMarkdown,
+[data-testid="stMarkdownContainer"] {
+    font-family: var(--sans) !important;
+}
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+.stMarkdown h4, .stMarkdown h5, .stMarkdown h6,
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3,
+[data-testid="stMarkdownContainer"] h4,
+[data-testid="stMarkdownContainer"] h5 {
+    font-family: var(--sans) !important;
+    color: var(--ink) !important;
+    letter-spacing: 0 !important;
+}
+.stMarkdown h2, [data-testid="stMarkdownContainer"] h2 {
+    font-size: 1.2rem !important;
+    font-weight: 600 !important;
+    margin: 0 0 0.7rem 0 !important;
+}
+.stMarkdown h3, [data-testid="stMarkdownContainer"] h3 {
+    font-size: 1.1rem !important;
+    font-weight: 600 !important;
+    margin: 0 0 0.6rem 0 !important;
+}
+.stMarkdown h4, [data-testid="stMarkdownContainer"] h4 {
+    font-size: 1rem !important;
+    font-weight: 600 !important;
+    color: var(--ink2) !important;
+    letter-spacing: 0 !important;
+    margin: 1.05rem 0 0.5rem 0 !important;
+}
+.stMarkdown p, .stMarkdown li,
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li {
+    font-family: var(--sans) !important;
+}
+
+/* 提示条内部容器不要自带底色，只保留左侧色条 */
+[data-testid="stAlert"] div { background: transparent !important; }
+
+/* 小写希腊字母在微标签里保持原样 */
+.metric-l .lc { text-transform: none; letter-spacing: 0; }
+
+/* 侧栏窄表：固定列宽、限宽，避免表头折行或数值列拉满整行 */
+table.spec.side { table-layout: fixed; max-width: 380px; }
+table.spec.side th:first-child,
+table.spec.side td.k { width: 40%; }
+
+/* 图表控件：动画按钮、滑块、模式栏 */
+.updatemenu-button rect {
+    fill: var(--paper2) !important;
+    stroke: var(--rule) !important;
+    stroke-width: 1 !important;
+    rx: 2 !important;
+}
+.updatemenu-button:hover rect { fill: var(--paper3) !important; stroke: #cbd5e1 !important; }
+.updatemenu-button text {
+    fill: var(--ink2) !important;
+    font-family: var(--sans) !important;
+    font-size: 12px !important;
+    letter-spacing: 0.01em;
+}
+.slider-container .slider-group .slider-label {
+    font-family: var(--sans) !important;
+    font-size: 11.5px !important;
+    fill: var(--ink4) !important;
+}
+[data-testid="stPlotlyChart"]:hover .modebar { opacity: 1; }
+[data-testid="stPlotlyChart"] .modebar-btn path { fill: var(--ink3) !important; }
+
+/* 图片：细边框，不带圆角 */
+[data-testid="stImage"] img {
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+}
+
+/* 分步向导：步骤条与页面卡 */
+.steps {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 16px 0 20px 0;
+}
+.steps .step {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 12px;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--paper2);
+    color: var(--ink4);
+    font-size: 0.84rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+.steps .step b {
+    font-family: var(--sans);
+    font-size: 0.78rem;
+    color: var(--ink4);
+}
+.steps .step.done { background: var(--paper3); color: var(--ink2); }
+.steps .step.done b { color: var(--ink3); }
+.steps .step.on { border-color: var(--ink); color: var(--ink); }
+.steps .step.on b { color: var(--accent); }
+.steps i { font-style: normal; font-size: 0.8rem; color: #cbd5e1; }
+
+.st-key-modecard1, .st-key-modecard2, .st-key-modecard3,
+.st-key-modecard9, .st-key-paramcard {
+    background: var(--paper2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 16px 18px 14px 18px !important;
+    margin-bottom: 14px;
+}
+/* 模式卡示意图：与卡内文字同宽，16:9 统一比例，四张卡对齐 */
+[class*="st-key-modecard"] [data-testid="stImage"] { margin: 0 0 12px 0; }
+[class*="st-key-modecard"] [data-testid="stImage"] img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    height: auto;
+    object-fit: cover;
+    object-position: center 50%;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+}
+
+/* 图片缺失时的占位：保持与图同样的 16:9 占位，避免四张卡高度不齐 */
+.mode-img-missing {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 16 / 9;
+    margin: 0 0 12px 0;
+    border: 1px dashed var(--rule);
+    border-radius: 2px;
+    background: var(--paper3);
+    color: var(--ink4);
+    font-size: 0.82rem;
+}
+
+/* 主案例（整行）与拓展场景（三列）的分组 */
+.mode-group {
+    margin: 20px 0 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    font-size: 0.86rem;
+    color: var(--ink4);
+    letter-spacing: 0.04em;
+}
+.st-key-modecard1 .card-title { font-size: 1.1rem; }
+.st-key-modecard1 [data-testid="stImage"] { margin: 0; }
+.mode-desc {
+    font-size: 0.9rem;
+    color: var(--ink2);
+    line-height: 1.65;
+    margin: 2px 0 10px 0;
+}
+.mode-spec {
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.86rem;
+    color: var(--ink4);
+    letter-spacing: 0;
+    margin-bottom: 14px;
+}
+
+/* 滑块两端的上下限标签会随可用宽度忽隐忽现，导致行高跳动；
+   范围已写在控件下方的说明里，这里直接隐藏，保持三行等高。 */
+[data-testid="stSliderTickBar"],
+[data-testid="stSliderTickBarMin"],
+[data-testid="stSliderTickBarMax"] { display: none; }
+"""
+st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+
+FONT = "'Microsoft YaHei', 'Segoe UI', Arial, 'Noto Sans SC', sans-serif"
+PLOTLY_CONFIG = {"displaylogo": False, "scrollZoom": True}
+N_GRID = 41
+
+# 载荷输入范围：(最小, 最大, 步长)；滑块与精确值框共用同一组取值
+NX_RANGE = (0, 2000, 10)
+SF_RANGE = (1.0, 2.0, 0.05)
+
+# 离线 ABAQUS 线性摄动屈曲参考算例。
+# 模型源文件与结果库已随包提供于 abaqus/ 目录（Job_*.inp、Job_*.odb），可导入或读取复核；
+# 未附 .cae 与试验数据，因此界面仍按「铺层一致 + 载荷命中」给出数值差异，不写作验证结论。
+ABAQUS_PRESETS = {
+    (500, 500): {
+        "label": "无人机机翼蒙皮",
+        "eigen": 2.1118,
+        "ncr": 2111.8,
+        "n_plies": 12,
+        "theta4": [-44.9, 44.9, 45.2, -45.2],
+        "odb": "Job_1_Drone.odb",
+        "image": "abaqus_drone.png",
+    },
+    (1000, 200): {
+        "label": "新能源电池包上盖",
+        "eigen": 1.9976,
+        "ncr": 1997.6,
+        "n_plies": 10,
+        "theta4": [44.96, -45.28, -44.64, -90.0],
+        "odb": "Job_2_Battery.odb",
+        "image": "abaqus_battery.png",
+    },
+    (1500, 800): {
+        "label": "航天器太阳能帆板",
+        "eigen": 6.5138,
+        "ncr": 6513.8,
+        "n_plies": 16,
+        "theta4": [-45.0, 45.0, 45.0, -45.0],
+        "odb": "Job_3_Solar.odb",
+        "image": "abaqus_solar.png",
+    },
+}
+
+# 各算例对应的 ABAQUS 云图（位于 figures/ 目录下）
+ABAQUS_IMAGES = {k: v["image"] for k, v in ABAQUS_PRESETS.items()}
+
+ABAQUS_TOL_DEG = 1.0     # 铺层角度偏差在此范围内视为同一铺层
+
+# 模式卡示意图：图片自带编号徽标已裁掉，标题统一由卡片文字给出。
+MODE_IMAGES = {
+    "无人机机翼蒙皮": "mode_m1_uav.png",
+    "新能源电池包上盖": "mode_m2_ev.png",
+    "航天器太阳能帆板": "mode_m3_solar.png",
+}
+CUSTOM_MODE_IMAGE = "mode_m0_custom.png"
+
+# 场景预设：选择后联动滑块；用户之后仍可手动微调。
+SCENES = {
+    "自定义任意工况": {
+        "subtitle": "自定义任意工况 · 双向或单向受压",
+        "preset": None,
+    },
+    "无人机机翼蒙皮": {
+        "subtitle": "无人机机翼蒙皮 · 双向等压 · 偏减重",
+        "preset": {"nx": 500, "ny": 500, "sf": 1.5},
+    },
+    "新能源电池包上盖": {
+        "subtitle": "新能源电池包上盖 · 非等双轴算例 · Ny/Nx = 0.2",
+        "preset": {"nx": 1000, "ny": 200, "sf": 1.2},
+    },
+    "航天器太阳能帆板": {
+        "subtitle": "航天器太阳能帆板 · 高载荷比算例 · SF 2.0",
+        "preset": {"nx": 1500, "ny": 800, "sf": 2.0},
+    },
+}
+
+# 云端预设案例：键为 (Nx, Ny, SF)，值为事先算好的结果。
+DEMO_PRESETS = {
+    (500, 500, 1.5): {
+        "label": "500/500 经典等双轴",
+        "n_plies": 10,
+        "theta4": [-45.0, 45.0, 45.0, -90.0],
+        "ncr": 1205.4,
+        "base_ncr": 623.6,
+        "thinner": {"n": 8, "ncr": 625.0},
+    },
+    (1000, 200, 1.2): {
+        "label": "1000/200 电池包上盖",
+        "n_plies": 10,
+        "theta4": [-45.0, 45.0, 45.0, 0.0],
+        "ncr": 2009.0,
+        "base_ncr": 1213.5,
+        "thinner": {"n": 8, "ncr": 1041.7},
+    },
+    (1500, 800, 2.0): {
+        "label": "1500/800 太阳能帆板",
+        "n_plies": 14,
+        "theta4": [48.5506, -38.5939, -74.7649, 50.7788],
+        "ncr": 4091.9,
+        "base_ncr": 2606.0,
+        "thinner": {"n": 12, "ncr": 2776.7},
+    },
+}
+
+# 隔离区：来源未核实的离线预设。
+# (1040, 1040, 1.5) 与 (1070, 870, 1.5) 两条记录缺少可追溯的优化日志，
+# 且共用同一组 theta4 = [-40.3, 49.8, -75.4, 51.0]，无法确认各自独立寻优得到，
+# 因此原样保留在这里，但不再进入 DEMO_PRESETS 的运行路径。
+# 恢复条件：补齐这两条工况的 GA 日志或离线计算结果，并确认铺层与工况一一对应。
+UNVERIFIED_DEMO_PRESETS = {
+    (1040, 1040, 1.5): {
+        "label": "1040/1040 等双轴",
+        "n_plies": 14,
+        "theta4": [-40.3, 49.8, -75.4, 51.0],
+        "ncr": 3144.9,
+        "base_ncr": 1711.1,
+        "thinner": {"n": 12, "ncr": 1977.9},
+    },
+    (1070, 870, 1.5): {
+        "label": "1070/870 非等双轴",
+        "n_plies": 14,
+        "theta4": [-40.3, 49.8, -75.4, 51.0],
+        "ncr": 3469.1,
+        "base_ncr": 2012.0,
+        "thinner": {"n": 12, "ncr": 2181.8},
+    },
+}
+
+_FAST_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _ga_guard(fast: bool):
+    """串行化 GA 调用并（快速模式下）临时降级精度。
+
+    Auto_Design 的 GA 规模与精修级数是模块级全局量：快速模式会临时改成
+    40×30、M = 10。若同一个进程里另一个会话正跑标准模式，就会读到被降级的
+    参数，因此两条路径都进同一把锁；快速模式再叠加降级与恢复。
+    """
+    with _FAST_LOCK:
+        if not fast:
+            yield
+            return
+        saved = (ad.GA_POP, ad.GA_GEN, ad._SOLVER_CHK)
+        ad.GA_POP, ad.GA_GEN = 40, 30
+        ad._SOLVER_CHK = BucklingSolver(A_PLATE, B_PLATE, 10)
+        try:
+            yield
+        finally:
+            ad.GA_POP, ad.GA_GEN, ad._SOLVER_CHK = saved
+
+
+def _lower_accuracy():
+    """兼容旧调用点：等价于快速模式的精度降级。"""
+    return _ga_guard(True)
+
+
+# 结果来源：页面、设计记录、导出报告共用同一套说法，避免各页各写一套
+SOURCE_INFO = {
+    "ga": ("完整优化计算",
+           "NSGA-II 在对称铺层上搜索角度，再用 SLSQP + Nelder–Mead 精修"),
+    "pure0": ("单向受压纯 0° 铺层",
+              "单向受压时纯 0° 的 D11 最大，已是解析最优，未运行 GA"),
+    "preset": ("离线预设算例",
+               "读取事先算好的结果，本次没有运行 GA"),
+    "estimate": ("纯 0° 简化估算",
+                 "未运行 GA：层数按纯 0° 可行性确定，铺层角度没有优化"),
+}
+
+
+def source_of(res: dict) -> str:
+    """取结果来源标识；缺字段时按估算处理。"""
+    return res.get("source", "estimate")
+
+
+def source_line(res: dict) -> str:
+    """一行来源说明，供 caption 使用。"""
+    label, detail = SOURCE_INFO[source_of(res)]
+    return f"**计算来源：{label}** —— {detail}。"
+
+
+# 校核结论：只看 Ncr / FI 与结果来源，不看场景名或预设标签
+VERDICT_TEXT = {
+    "pass": "校核通过",
+    "buckling_fail": "屈曲承载不足",
+    "strength_fail": "强度校核不通过",
+    "both_fail": "屈曲与强度均不满足",
+    "unverified": "未验证（估算结果）",
+    "infeasible": "未找到可行解",
+    "verification_failed": "高阶复核未通过",
+    "error": "计算失败",
+}
+
+
+def verdict_of(res: dict) -> dict:
+    """由实际计算结果判定屈曲、强度与整体结论。
+
+    演示模式下没有离线算例时给出的是纯 0° 估算：数值是按该 0° 铺层实算的，
+    但没有做铺层优化，因此即使达标也判为 unverified，不能当设计结论。
+    """
+    status = res.get("status")
+    if status in ("infeasible", "error", "verification_failed"):
+        return {"overall": status, "buckling": None, "strength": None,
+                "ncr": None, "target": None, "fi": None}
+
+    ncr, target = float(res["ncr"]), float(res["target"])
+    fi = float(res["fi"])
+    buckling_ok, strength_ok = ncr >= target, fi < 1.0
+    if source_of(res) == "estimate":
+        overall = "unverified"
+    elif buckling_ok and strength_ok:
+        overall = "pass"
+    elif buckling_ok:
+        overall = "strength_fail"
+    elif strength_ok:
+        overall = "buckling_fail"
+    else:
+        overall = "both_fail"
+    return {"overall": overall, "buckling": buckling_ok, "strength": strength_ok,
+            "ncr": ncr, "target": target, "fi": fi}
+
+
+# 计算层
+# 逐层数优化主流程（D1）：主推荐 = 最轻可行，备选 = 更大裕度
+PRESET_SCAN_FILE = "preset_scan.json"
+
+
+def _data_path(name: str):
+    """在包内 data/ 目录里找数据文件（代码目录 → 上级 → 仓库根，再退回 cwd）。"""
+    here = Path(__file__).resolve().parent
+    for base in (here, here.parent, here.parent.parent):
+        p = base / "data" / name
+        if p.is_file():
+            return p
+    p = Path.cwd() / "data" / name
+    return p if p.is_file() else None
+
+
+def _preset_scan() -> dict:
+    """离线算例的逐层数扫描表（由主流程重算，M = 16 复核）。
+
+    ``st.cache_data`` 只看函数体，文件改了不会自动失效，所以把
+    路径与 mtime 当参数传进去——数据表一换，缓存自然换新的。
+    """
+    path = _data_path(PRESET_SCAN_FILE)
+    if path is None:
+        return {}
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    return _preset_scan_cached(str(path), stamp)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _preset_scan_cached(path_str: str, stamp: float) -> dict:
+    try:
+        return json.loads(Path(path_str).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _base_ncr_at(n_plies: int, nx: float, ny: float) -> float:
+    """同层数纯 0° 的临界载荷（对照基准）。"""
+    solver = BucklingSolver(A_PLATE, B_PLATE, M_VERIFY)
+    return solver.ncr(ad.d_of_angles([0.0] * n_plies), nx, ny) * max(nx, ny)
+
+
+def _make_res(theta4, n_plies, nx, ny, sf, source, fast) -> dict:
+    """由一个候选（层数 + 4 个设计角）生成界面与导出统一使用的结果字典。"""
+    chk = BucklingSolver(A_PLATE, B_PLATE, M_VERIFY)
+    n_plies = int(n_plies)
+    theta4 = [float(t) for t in theta4]
+    ev = ad.evaluate_candidate(theta4, n_plies, nx, ny, sf, solver=chk)
+    d_zero = ad.d_of_angles([0.0] * n_plies)
+    # status 只对"真跑了优化"的结果做搜索/复核分级：快速模式用 M = 10 搜索，
+    # 复核改用 M = 16，搜到的高分方案有可能复核不达标，这时必须写成
+    # verification_failed，不能一律写 ok。演示预设与纯 0° 估算没有这一层，
+    # 它们由 source（preset/estimate）在结论里另行标注。
+    if source == "ga" and not ev["feasible"]:
+        status = "verification_failed"
+    else:
+        status = "ok"
+    return {
+        "status": status,
+        "nx": float(nx), "ny": float(ny), "sf": float(sf),
+        "fast": bool(fast), "source": source,
+        "target": max(nx, ny) * sf, "biaxial": (nx > 0 and ny > 0),
+        "n_plies": n_plies, "ncr": ev["ncr"], "lam": ev["lam"],
+        "layup": ev["layup"], "theta4": theta4, "stack": ev["stack"],
+        "thickness": ev["thickness"], "areal": ev["areal"],
+        "fi": ev["fi"], "fi_ply": ev["fi_ply"], "fi_theta": ev["fi_theta"],
+        "s16": ev["rules"]["s16"], "s26": ev["rules"]["s26"],
+        "rules": ev["rules"], "feasible": ev["feasible"],
+        "base_ncr": _base_ncr_at(n_plies, nx, ny),
+        "d_opt": ad.d_of_angles(ev["stack"]).tolist(), "d_zero": d_zero.tolist(),
+        "min_margin": ad.MIN_MARGIN, "margin_factor": ad.MARGIN_FACTOR,
+    }
+
+
+def _scan_row(row, nx, ny, sf) -> dict:
+    """逐层数扫描表的一行（M = 16 复核后的口径）。"""
+    ev = ad.evaluate_candidate(row["theta4"], row["n_plies"], nx, ny, sf,
+                               solver=BucklingSolver(A_PLATE, B_PLATE, M_VERIFY))
+    return {"n_plies": int(row["n_plies"]), "areal": ev["areal"],
+            "lam": ev["lam"], "ncr": ev["ncr"], "fi": ev["fi"],
+            "feasible": ev["feasible"], "layup": ev["layup"],
+            "theta4": [float(t) for t in row["theta4"]]}
+
+
+def _with_scan(res: dict, scan: list, backup: dict | None) -> dict:
+    """补上逐层数扫描、备选与"下一较薄候选"三块信息。"""
+    res["scan_rows"] = scan
+    res["backup"] = backup
+    thinner = [r for r in scan if r["n_plies"] < res["n_plies"]]
+    res["next_thinner"] = thinner[-1] if thinner else None
+    res["thinner"] = ({"n": res["next_thinner"]["n_plies"],
+                       "ncr": res["next_thinner"]["ncr"]}
+                      if res["next_thinner"] else None)
+    res["scan_min"] = scan[0]["n_plies"] if scan else res["n_plies"]
+    res["scan_max"] = scan[-1]["n_plies"] if scan else res["n_plies"]
+    return res
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def auto_design(nx: int, ny: int, sf: float, fast: bool) -> dict:
+    """主流程：逐层数优化角度，取最轻可行候选（λ ≥ MIN_MARGIN·SF）。
+
+    与旧流程的差别：旧流程先用纯 0° 扫描定层数、再在该层数上调角度，
+    等于让最差铺层族决定厚度；这里把层数也放进搜索。
+    """
+    nx, ny, sf = float(nx), float(ny), float(sf)
+    target = max(nx, ny) * sf
+    with _FAST_LOCK:          # 与快速模式的参数降级共用一把锁
+        sel = ad.select_design(nx, ny, sf, fast=fast)
+
+    if sel["status"] != "ok":
+        rows = ad.scan_pure_zero(nx, ny, target)
+        ncr_top = rows[-1]["ncr"]
+        need = (ad.N_MAX * (target / ncr_top) ** (1.0 / 3.0)
+                if ncr_top > 0 else np.inf)
+        return {"status": "infeasible", "nx": nx, "ny": ny, "sf": sf,
+                "target": target, "biaxial": (nx > 0 and ny > 0),
+                "rows": rows, "need_plies": float(need), "source": "ga",
+                "fast": bool(fast), "scan_rows": []}
+
+    prim = sel["primary"]
+    res = _make_res(prim["theta4"], prim["n_plies"], nx, ny, sf, "ga", fast)
+    scan = [_scan_row(r, nx, ny, sf) for r in sel["rows"]]
+    backup = None
+    if sel["backup"]:
+        b = sel["backup"]
+        backup = _make_res(b["theta4"], b["n_plies"], nx, ny, sf, "ga", fast)
+    _with_scan(res, scan, backup)
+    res["rows"] = ad.scan_pure_zero(nx, ny, target)
+    res["n_min"] = res["scan_min"]
+    res["evals"] = sel["evals"]
+    res["ga_time"] = sum(r.get("seconds", 0.0) for r in sel["rows"])
+    return res
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def demo_design(nx: int, ny: int, sf: float) -> dict:
+    """预设案例模式：只查离线逐层数表，或按纯 0° 做快速估算；不运行 GA。"""
+    nx, ny, sf = float(nx), float(ny), float(sf)
+    target = max(nx, ny) * sf
+    biaxial = (nx > 0 and ny > 0)
+    key = f"{int(round(nx))}|{int(round(ny))}|{round(sf, 2)}"
+    table = _preset_scan().get(key)
+
+    if table:
+        p = table["primary"]
+        res = _make_res(p["theta4"], p["n_plies"], nx, ny, sf, "preset", True)
+        _key = (int(round(nx)), int(round(ny)), round(sf, 2))
+        res["source_label"] = DEMO_PRESETS.get(_key, {}).get(
+            "label", table.get("case_id", ""))
+        res["isolated_preset"] = False
+        scan = [
+            {"n_plies": r["n_plies"], "areal": r["areal"], "lam": r["lam"],
+             "ncr": r["ncr"], "fi": r["fi"], "feasible": r["feasible"],
+             "layup": r["layup"], "theta4": r["theta4"]}
+            for r in table["rows"]
+        ]
+        backup = None
+        if table.get("backup"):
+            b = table["backup"]
+            backup = _make_res(b["theta4"], b["n_plies"], nx, ny, sf,
+                               "preset", True)
+        _with_scan(res, scan, backup)
+        res["rows"] = ad.scan_pure_zero(nx, ny, target)
+        res["n_min"] = res["scan_min"]
+        res["evals"] = 0
+        res["ga_time"] = 0.0
+        return res
+
+    # 未命中离线表：纯 0° 估算（明确标注，不当成优化结果）
+    rows = ad.scan_pure_zero(nx, ny, target)
+    feasible = [r for r in rows if r["ok"]]
+    isolated = UNVERIFIED_DEMO_PRESETS.get(
+        (int(round(nx)), int(round(ny)), round(sf, 2)))
+    if not feasible:
+        ncr_top = rows[-1]["ncr"]
+        need = (ad.N_MAX * (target / ncr_top) ** (1.0 / 3.0)
+                if ncr_top > 0 else np.inf)
+        return {"status": "infeasible", "nx": nx, "ny": ny, "sf": sf,
+                "target": target, "biaxial": biaxial, "rows": rows,
+                "need_plies": float(need), "demo": True, "source": "estimate",
+                "scan_rows": []}
+
+    n_plies = feasible[0]["N"]
+    if biaxial and n_plies % 2:
+        n_plies += 1
+    res = _make_res([0.0, 0.0, 0.0, 0.0], n_plies, nx, ny, sf,
+                    "estimate", True)
+    res["demo"] = True
+    res["isolated_preset"] = isolated is not None
+    res["source_label"] = (
+        "纯 0° 快速估算（未运行 GA；该工况命中的离线算例来源未核实，未采用）"
+        if isolated is not None else "纯 0° 快速估算（未运行 GA）")
+    _with_scan(res, [], None)
+    res["rows"] = rows
+    res["n_min"] = feasible[0]["N"]
+    res["evals"] = 0
+    res["ga_time"] = 0.0
+    return res
+
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def buckling_mode(stack, nx: float, ny: float) -> dict:
+    """Ritz 临界模态（3D 动画数据）。"""
+    D = ad.d_of_angles(stack)
+    solver = BucklingSolver(A_PLATE, B_PLATE, M_VERIFY)
+    lam, c = solver.ncr_mode(D, nx, ny)
+
+    x = np.linspace(0.0, A_PLATE, N_GRID)
+    y = np.linspace(0.0, B_PLATE, N_GRID)
+    m_idx = np.arange(1, M_VERIFY + 1)
+    phi = np.sin(np.pi * np.outer(x, m_idx) / A_PLATE)
+    psi = np.sin(np.pi * np.outer(y, m_idx) / B_PLATE)
+    w = phi @ c @ psi.T
+    w = w / np.max(np.abs(w))
+    m_dom, n_dom = np.unravel_index(int(np.argmax(np.abs(c))), c.shape)
+
+    X, Y = np.meshgrid(x, y)
+    w11 = np.sin(np.pi * X / A_PLATE) * np.sin(np.pi * Y / B_PLATE)
+
+    return {"lam": float(lam), "x": x, "y": y,
+            "w_actual": w.T, "w11": w11,
+            "m": int(m_dom) + 1, "n": int(n_dom) + 1}
+
+
+# 绘图层
+def _surface_trace(X, Y, Z):
+    """统一风格的曲面 trace（动画帧复用，颜色标尺固定）。"""
+    return go.Surface(
+        x=X, y=Y, z=Z,
+        colorscale="RdBu_r", cmin=-1.0, cmax=1.0, showscale=False,
+        lighting=dict(ambient=0.68, diffuse=0.85, specular=0.15, roughness=0.65),
+        contours=dict(z=dict(show=True, usecolormap=True)),
+        hovertemplate="x = %{x:.3f} m<br>y = %{y:.3f} m<br>"
+                      "w / w_max = %{z:+.2f}<extra></extra>",
+        name="w / w_max",
+    )
+
+
+def figure_mode_3d(x, y, Z) -> go.Figure:
+    """屈曲波形 3D 曲面 + 幅值演化动画。"""
+    X, Y = np.meshgrid(x, y)
+    amps = np.linspace(0.06, 1.0, 14)
+    frames = [go.Frame(data=[_surface_trace(X, Y, Z * a)], name=f"{a:.3f}")
+              for a in amps]
+    fig = go.Figure(data=[_surface_trace(X, Y, Z * amps[-1])], frames=frames)
+
+    play = dict(label="播放", method="animate",
+                args=[None, {"frame": {"duration": 90, "redraw": True},
+                             "fromcurrent": False,
+                             "transition": {"duration": 0}}])
+    pause = dict(label="暂停", method="animate",
+                 args=[[None], {"frame": {"duration": 0, "redraw": False},
+                                "mode": "immediate",
+                                "transition": {"duration": 0}}])
+    steps = [dict(method="animate", label=f"{a:.0%}",
+                  args=[[f.name], {"mode": "immediate",
+                                   "frame": {"duration": 0, "redraw": True},
+                                   "transition": {"duration": 0}}])
+             for a, f in zip(amps, frames)]
+
+    fig.update_layout(
+        height=460,
+        margin=dict(l=0, r=0, t=30, b=44),
+        paper_bgcolor="white",
+        font=dict(family=FONT, size=13),
+        updatemenus=[dict(type="buttons", direction="right", showactive=False,
+                          x=0.0, y=1.0, xanchor="left", yanchor="bottom",
+                          pad=dict(l=0, r=4, t=0, b=0),
+                          bgcolor="#ffffff", bordercolor="#cbd5e1",
+                          font=dict(size=12, color="#334155"),
+                          buttons=[play, pause])],
+        sliders=[dict(active=len(amps) - 1, x=0.02, y=-0.02, len=0.96,
+                      currentvalue=dict(prefix="归一化幅值 ", font=dict(size=12)),
+                      font=dict(size=11),
+                      bgcolor="#f8fafc", bordercolor="#e2e8f0",
+                      tickcolor="#94a3b8", steps=steps)],
+        scene=dict(
+            xaxis=dict(title="x (m)", range=[0.0, A_PLATE],
+                       showbackground=True, backgroundcolor="#f8fafc",
+                       gridcolor="#e2e8f0", zeroline=False),
+            yaxis=dict(title="y (m)", range=[0.0, B_PLATE],
+                       showbackground=True, backgroundcolor="#f8fafc",
+                       gridcolor="#e2e8f0", zeroline=False),
+            zaxis=dict(title="w / w_max（无量纲）", range=[-1.2, 1.2],
+                       showbackground=True, backgroundcolor="#f8fafc",
+                       gridcolor="#e2e8f0", zeroline=False),
+            aspectmode="manual", aspectratio=dict(x=1.05, y=1.05, z=0.5),
+            camera=dict(eye=dict(x=1.24, y=-1.44, z=0.92)),
+        ),
+    )
+    return fig
+
+
+def figure_compare(base_ncr: float, ncr: float, target: float) -> go.Figure:
+    """柱状图：优化推荐 vs 纯 0° 同层数铺层。"""
+    values = [base_ncr, ncr]
+    fig = go.Figure(go.Bar(
+        x=["纯 0° 铺层", "优化推荐"], y=values, width=0.55,
+        marker=dict(color=["#94a3b8", "#2563eb"],
+                    line=dict(color="#0f172a", width=1)),
+        text=[f"{base_ncr:,.0f}", f"{ncr:,.0f}"],
+        textposition="outside", cliponaxis=False,
+        textfont=dict(size=13, color="#0f172a", family=FONT),
+        hovertemplate="%{x}<br>Ncr = %{y:,.0f} N/m<extra></extra>",
+    ))
+    fig.add_hline(y=target, line=dict(color="#ef4444", dash="dash", width=1.5))
+    fig.add_annotation(
+        x=0.015, y=target, xref="paper", yref="y", showarrow=False,
+        text=f"目标 Ncr = {target:,.0f} N/m", xanchor="left", yanchor="bottom",
+        font=dict(color="#ef4444", size=12),
+        bgcolor="rgba(255,255,255,0.88)", borderpad=3,
+    )
+    fig.update_layout(
+        height=372,
+        margin=dict(l=96, r=14, t=40, b=10),
+        paper_bgcolor="white",
+        font=dict(family=FONT, size=13),
+        title=dict(text="同层数下的临界屈曲载荷对比（N/m）", x=0.0, y=0.97,
+                   xanchor="left", yanchor="top",
+                   font=dict(size=13, color="#475569")),
+        showlegend=False,
+        xaxis=dict(title=""),
+        yaxis=dict(title=dict(text="临界屈曲载荷 Ncr (N/m)", standoff=10,
+                              font=dict(size=12, color="#475569")),
+                   tickfont=dict(size=12, color="#475569"),
+                   range=[0, max(values + [target]) * 1.20]),
+        hoverlabel=dict(font=dict(family=FONT, size=12)),
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0", zeroline=False)
+    return fig
+
+
+LAYUP_COLORS = {
+    "0": "#2563eb",
+    "90": "#dc2626",
+    "+45": "#0d9488",
+    "-45": "#f59e0b",
+    "other": "#94a3b8",
+}
+
+
+def _ply_color(angle: float) -> str:
+    """按最接近的标准角度（0 / ±45 / 90）着色。
+
+    连续角度优化会给出 48.6°、−38.6° 这类值，若只在 ±1° 内着色，整条铺层会全灰；
+    这里改为「就近归档」，颜色表达的是"这一层大致站在哪个方向"，精确角度看左侧序列。
+    """
+    a = ((float(angle) + 180.0) % 180.0) - 90.0  # 折回 (-90, 90]
+    if abs(a) <= 22.5:
+        return LAYUP_COLORS["0"]
+    if abs(abs(a) - 90.0) <= 22.5:
+        return LAYUP_COLORS["90"]
+    return LAYUP_COLORS["+45"] if a > 0 else LAYUP_COLORS["-45"]
+
+
+def figure_layup(stack) -> go.Figure:
+    """水平堆叠条形图：每一层一个色块，悬停显示层号与角度。"""
+    fig = go.Figure()
+    for i, angle in enumerate(stack, start=1):
+        fig.add_trace(go.Bar(
+            y=["铺层"], x=[1], orientation="h",
+            marker=dict(color=_ply_color(angle),
+                        line=dict(color="rgba(255,255,255,0.9)", width=1)),
+            hovertemplate=f"第 {i} 层：{float(angle):g}°<extra></extra>",
+            showlegend=False,
+        ))
+    fig.update_layout(
+        barmode="stack",
+        height=150,
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(visible=False, fixedrange=True),
+        yaxis=dict(visible=False, fixedrange=True),
+        hoverlabel=dict(font=dict(family=FONT, size=12)),
+        bargap=0.0,
+    )
+    return fig
+
+
+# 界面小组件
+def pretty_layup(layup: str) -> str:
+    """去掉无意义的小数尾零（-45.0 → -45）。"""
+    return re.sub(r"\.0(?=[/\]])", "", layup)
+
+
+_SUB_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def subscript(num) -> str:
+    """数字转下标字符，用于 [0]₈s 一类标准层合板记号。"""
+    return str(num).translate(_SUB_DIGITS)
+
+
+def layup_card(layup: str) -> None:
+    """推荐铺层序列（等宽字体，标准层合板记号）。"""
+    shown = pretty_layup(layup)
+    size = 21 if len(shown) <= 34 else 17 if len(shown) <= 44 else 14
+    shown = shown.replace("/", "/<wbr>")
+    st.markdown(
+        f"""
+        <div style="background:#f1f5f9;border:1px solid #e2e8f0;
+                    border-left:3px solid #2563eb;padding:12px 16px 13px 16px;
+                    margin-bottom:12px;">
+          <div style="font-size:12px;letter-spacing:0;color:#475569;
+                      font-weight:600;
+                      margin-bottom:5px;">推荐铺层序列</div>
+          <div style="font-family:Consolas,'Segoe UI Mono',monospace;
+                      font-size:{size}px;font-weight:600;color:#0f172a;
+                      line-height:1.45;word-break:normal;
+                      overflow-wrap:normal;">{shown}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def scan_table(rows, target: float) -> pd.DataFrame:
+    """纯 0° 层数扫描表。"""
+    return pd.DataFrame({
+        "N": [r["N"] for r in rows],
+        "t (mm)": [round(r["t"], 3) for r in rows],
+        "Ncr (N/m)": [round(r["ncr"], 1) for r in rows],
+        "λ": [round(r["lam"], 2) for r in rows],
+        "Ncr / 目标值": [round(r["ncr"] / target, 2) for r in rows],
+        "判定": ["可行" if r["ok"] else "不足" for r in rows],
+    })
+
+
+def _scan_df(rows: list, sf: float, min_margin: float) -> pd.DataFrame:
+    """逐层数优化结果表：层数 / 面密度 / λ / 裕度 / Ncr / FI / 判定 / 铺层。"""
+    return pd.DataFrame([{
+        "层数 N": r["n_plies"],
+        "面密度 (kg/m²)": f"{r['areal']:.2f}",
+        "λ": f"{r['lam']:.3f}",
+        "λ/SF": f"{r['lam'] / sf:.2f}",
+        "Ncr (N/m)": f"{r['ncr']:,.1f}",
+        "最大 FI": f"{r['fi']:.2e}",
+        "判定": "可行" if r["feasible"] else "不足",
+        "铺层": pretty_layup(r["layup"]),
+    } for r in rows])
+
+
+def verdict_block(res: dict) -> None:
+    """屈曲、强度分别给结论，再给整体结论；全部由计算结果决定。"""
+    v = verdict_of(res)
+    overall = v["overall"]
+    if overall in ("infeasible", "error"):
+        return
+    if overall == "verification_failed":
+        st.warning(
+            "高阶复核未通过：搜索阶段（快速模式，M = 10）选出的方案，"
+            f"改用 M = {M_VERIFY} 复核后已不满足判据（λ ≥ "
+            f"{ad.MIN_MARGIN:g}·SF 或 FI < 1 或制造规则）。"
+            "下面给出的是该候选的实算值，**不能作为设计结论**；"
+            "请取消「快速模式」重算，或选择更厚的层数。"
+        )
+        return
+
+    ncr, target, fi = v["ncr"], v["target"], v["fi"]
+    buckle_mark = "通过" if v["buckling"] else "不足"
+    strength_mark = "通过" if v["strength"] else "不通过"
+    st.markdown(
+        f"""
+        <table class="spec">
+          <tr><th style="width:18%">校核项</th><th>判据与实算值</th>
+              <th style="width:12%;text-align:right">结论</th></tr>
+          <tr><td class="k">屈曲承载</td>
+              <td class="v">N<sub>cr</sub> = {ncr:,.0f} N/m
+                  {'≥' if v['buckling'] else '&lt;'} N<sub>cr,target</sub> =
+                  {target:,.0f} N/m</td>
+              <td class="v" style="text-align:right">{buckle_mark}</td></tr>
+          <tr><td class="k">面内强度</td>
+              <td class="v">Tsai-Hill FI = {fi:.2e}
+                  {'&lt;' if v['strength'] else '≥'} 1</td>
+              <td class="v" style="text-align:right">{strength_mark}</td></tr>
+          <tr><td class="k">整体结论</td>
+              <td class="v">{VERDICT_TEXT[overall]}</td>
+              <td class="v" style="text-align:right">—</td></tr>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if overall == "pass":
+        st.success(
+            f"整体校核通过：Ncr = {ncr:,.0f} N/m ≥ 目标 {target:,.0f} N/m，"
+            f"Tsai-Hill FI = {fi:.2e} < 1。"
+        )
+    elif overall == "unverified":
+        st.warning(
+            f"未验证：这是演示模式下的纯 0° 估算（Ncr = {ncr:,.0f} N/m，"
+            f"FI = {fi:.2e}，按该 0° 铺层实算），铺层角度没有做优化，"
+            "不能作为设计结论。要得到可用的校核结论，请在本地以 "
+            "APP_MODE=local 运行，或选择有离线算例的载荷工况。"
+        )
+    elif overall == "buckling_fail":
+        st.warning(
+            f"整体未通过：屈曲承载不足（Ncr = {ncr:,.0f} N/m < 目标 "
+            f"{target:,.0f} N/m），需增加层数或重新优化铺层角度。"
+        )
+    elif overall == "strength_fail":
+        st.error(
+            f"整体未通过：屈曲满足（Ncr = {ncr:,.0f} N/m ≥ 目标 "
+            f"{target:,.0f} N/m），但 Tsai-Hill FI = {fi:.2e} ≥ 1"
+            + (f"（最危险层为第 {res['fi_ply']} 层，θ = {res['fi_theta']:.1f}°）"
+               if res.get("fi_ply") else "")
+            + "，需增加厚度。"
+        )
+    else:
+        st.error(
+            f"整体未通过：屈曲（Ncr = {ncr:,.0f} N/m，目标 {target:,.0f} N/m）"
+            f"与强度（FI = {fi:.2e}）均不满足，需同时增加层数与厚度。"
+        )
+
+
+
+def _figure_path(name: str):
+    """按包内 / 根目录 / 当前目录布局查找 figures 下的图片，找不到返回 None。"""
+    here = Path(__file__).resolve().parent
+    for p in (here / "figures" / name,
+              here.parent / "figures" / name,
+              here.parent.parent / "figures" / name,
+              Path.cwd() / "figures" / name,
+              Path.cwd() / name):
+        if p.exists():
+            return p
+    return None
+
+
+@st.cache_data(show_spinner=False, max_entries=1)
+def _logo_uri() -> str:
+    """报头标识：读 figures 下的位图并转成 data URI，找不到时返回空串。"""
+    path = _figure_path("logo_128.png")
+    if path is None:
+        return ""
+    return "data:image/png;base64," + b64encode(path.read_bytes()).decode("ascii")
+
+
+def _mode_image(scene: str | None) -> None:
+    """在模式卡顶部放一张示意图；缺少图片时给占位提示，不影响选择。"""
+    fname = MODE_IMAGES.get(scene or "", CUSTOM_MODE_IMAGE)
+    path = _figure_path(fname)
+    if path is not None:
+        st.image(str(path), width="stretch")
+    else:
+        st.markdown(
+            f'<div class="mode-img-missing">示意图缺失：figures/{escape(fname)}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _same_stack(stack, n_plies: int, theta4) -> bool:
+    """当前铺层是否与参考算例的铺层一致（角度容差 ABAQUS_TOL_DEG）。"""
+    cur = [float(a) for a in stack]
+    if len(cur) != int(n_plies):
+        return False
+    ref = [float(a) for a in ad.symmetric_stack([float(t) for t in theta4],
+                                                int(n_plies))]
+    for a, b in zip(cur, ref):
+        d = abs(a - b) % 360.0
+        if min(d, 360.0 - d) > ABAQUS_TOL_DEG:
+            return False
+    return True
+
+
+# 离线参考算例的可比状态。证据只能支撑到这里：
+# 铺层一致 ≠ 模型等价，材料/几何/网格/边界/加载方式没有随包模型文件可核对，
+# 所以"铺层一致"也只是条件性参考，不构成验证结论。
+ABA_STATE = {
+    "no_case": "该工况没有离线参考算例",
+    "stack_mismatch": "铺层不一致，不可直接比较",
+    "conditional": "条件性参考对比：铺层一致，模型等价性未验证",
+}
+
+
+def _abaqus_cmd() -> str | None:
+    """找本机 abaqus 命令：环境变量 → PATH → 常见安装位置。
+
+    显式设置 ABAQUS_CMD 时以它为准：指向不存在的路径即视为"本机没有 Abaqus"，
+    便于在没装的机器上把界面切到"只有离线参考算例"的形态。
+    """
+    import shutil
+    env_cmd = os.environ.get("ABAQUS_CMD")
+    if env_cmd is not None:
+        env_cmd = env_cmd.strip()
+        if not env_cmd:
+            return None
+        found = shutil.which(env_cmd)
+        if found:
+            return found
+        return env_cmd if Path(env_cmd).exists() else None
+    for cand in ("abaqus",
+                 r"C:\SIMULIA\Commands\abaqus.bat",
+                 r"D:\SIMULIA\Commands\abaqus.BAT"):
+        found = shutil.which(cand)
+        if found:
+            return found
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+def _append_fe_run(record: dict) -> None:
+    """把一次实算记录追加到 data/abaqus_runs.json（供表格回显）。"""
+    path = _data_path("abaqus_runs.json")
+    if path is None:
+        return
+    hist = []
+    if path.exists():
+        try:
+            hist = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            hist = []
+    hist.append(record)
+    path.write_text(json.dumps(hist, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+
+
+def _abaqus_runs() -> list:
+    path = _data_path("abaqus_runs.json")
+    if path is None:
+        return []
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return []
+    return _abaqus_runs_cached(str(path), stamp)
+
+
+@st.cache_data(show_spinner=False)
+def _series_extrap_cached(stack_key: tuple, nx: float, ny: float) -> dict:
+    import plate_series as ps
+
+    D = ad.d_of_angles(list(stack_key))
+    return ps.converged_ncr(D, nx, ny)
+
+
+def _series_extrap(res: dict, nx: float, ny: float) -> dict:
+    """级数解的收敛外推（缓存按铺层与载荷）。"""
+    return _series_extrap_cached(tuple(float(t) for t in res["stack"]),
+                                 float(nx), float(ny))
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def _abaqus_runs_cached(path_str: str, stamp: float) -> list:
+    try:
+        data = json.loads(Path(path_str).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _fe_run_for(res: dict, nx: float, ny: float) -> dict | None:
+    """在 data/abaqus_runs.json 里找与当前设计同铺层、同载荷的实算记录。"""
+    runs = _abaqus_runs()
+    if not runs:
+        return None
+    theta = res.get("theta4") or []
+    for rec in reversed(runs):
+        try:
+            if int(rec["n_plies"]) != int(res["n_plies"]):
+                continue
+            if abs(float(rec["nx"]) - float(nx)) > 1e-6:
+                continue
+            if abs(float(rec["ny"]) - float(ny)) > 1e-6:
+                continue
+            rth = [float(x) for x in rec["theta4"]]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(theta) == 4 and len(rth) == 4 and all(
+                abs(a - b) < 0.15 for a, b in zip(theta, rth)):
+            return rec
+    return None
+
+
+def aba_compare(res: dict, nx: float, ny: float) -> dict:
+    """判断当前结果与离线 ABAQUS 参考算例的可比状态。
+
+    返回 state ∈ {no_case, stack_mismatch, conditional}、参考记录、参考铺层，
+    以及（仅 conditional 时）与参考值的数值差异；后两项之外一律给 None。
+    """
+    ref = ABAQUS_PRESETS.get((int(round(nx)), int(round(ny))))
+    if ref is None:
+        return {"state": "no_case", "ref": None, "ref_layup": None,
+                "delta_pct": None, "note": ABA_STATE["no_case"]}
+
+    ref_layup = ad.stacking_text([float(t) for t in ref["theta4"]],
+                                 int(ref["n_plies"]))
+
+    # 参考铺层自身的 Ritz 解：与"当前设计选了哪套铺层"无关，
+    # 用来给"Ritz 法 vs ABAQUS"这一行一个稳定的对照值。
+    ref_ritz = None
+    ref_delta = None
+    try:
+        _stack = ad.symmetric_stack([float(t) for t in ref["theta4"]],
+                                    int(ref["n_plies"]))
+        _solver = BucklingSolver(A_PLATE, B_PLATE, M_VERIFY)
+        ref_ritz = float(_solver.ncr(ad.d_of_angles(_stack), nx, ny)) * max(nx, ny)
+        if float(ref["ncr"]) > 0:
+            ref_delta = (ref_ritz - float(ref["ncr"])) / float(ref["ncr"]) * 100.0
+    except Exception:  # 参考数据异常不应拖垮页面
+        ref_ritz, ref_delta = None, None
+
+    if not _same_stack(res.get("stack", []), ref["n_plies"], ref["theta4"]):
+        return {"state": "stack_mismatch", "ref": ref, "ref_layup": ref_layup,
+                "delta_pct": None, "note": ABA_STATE["stack_mismatch"],
+                "ref_ritz": ref_ritz, "ref_delta_pct": ref_delta}
+
+    ref_ncr = float(ref["ncr"])
+    delta = None
+    if ref_ncr > 0:
+        delta = (float(res["ncr"]) - ref_ncr) / ref_ncr * 100.0
+    return {"state": "conditional", "ref": ref, "ref_layup": ref_layup,
+            "delta_pct": delta, "note": ABA_STATE["conditional"],
+            "ref_ritz": ref_ritz, "ref_delta_pct": ref_delta}
+
+
+# 分步页面
+_STEPS = (
+    ("mode", "01", "选择模式"),
+    ("params", "02", "参数设置"),
+    ("result", "03", "计算结果"),
+)
+
+
+def step_bar(current: str) -> None:
+    """顶部步骤指示条；已完成的步骤可用下方按钮回退。"""
+    order = [s[0] for s in _STEPS]
+    idx = order.index(current) if current in order else 0
+    parts = []
+    for i, (_, num, label) in enumerate(_STEPS):
+        cls = "step on" if i == idx else ("step done" if i < idx else "step")
+        parts.append(f'<span class="{cls}"><b>{num}</b>{label}</span>')
+    st.markdown(
+        '<div class="steps">' + '<i>/</i>'.join(parts) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _goto(step: str) -> None:
+    """切换步骤并重跑脚本。"""
+    st.session_state["step"] = step
+    st.rerun()
+
+
+def _restart() -> None:
+    """清空当前任务，回到第 1 步开始新的设计。"""
+    st.session_state["design_job"] = None
+    st.session_state["calc_mode"] = None
+    st.session_state["scene"] = None
+    st.session_state.pop("_res_cache", None)
+    _goto("mode")
+
+
+HISTORY_COLS = [
+    "时间", "工况", "运行模式", "来源", "求解方法", "优化规模",
+    "Nx (N/m)", "Ny (N/m)", "SF", "目标 Ncr (N/m)",
+    "推荐铺层", "层数", "总厚 (mm)", "Ncr (N/m)", "λ",
+    "结论", "计算用时 (s)", "记录号", "版本",
+]
+
+
+def _record_design(res: dict, job: dict, elapsed: float | None = None) -> None:
+    """把本次设计追加到会话内的设计记录（会话结束即消失）。"""
+    ok = res.get("status") not in ("infeasible", "verification_failed")
+    stack = res.get("stack") or []
+    scene = st.session_state.get("scene")
+    hist = st.session_state.setdefault("history", [])
+    if len(hist) >= 20:
+        del hist[0]
+    src = source_of(res)
+    if src == "ga":
+        size = "NSGA-II 40 × 30（快速）" if job.get("fast") else "NSGA-II 80 × 60"
+    else:
+        size = "未运行 GA"
+    hist.append({
+        "时间": time.strftime("%H:%M:%S"),
+        "工况": scene or "自定义工况",
+        "运行模式": mode_text(),
+        "来源": SOURCE_INFO[src][0],
+        "求解方法": "CLT + Rayleigh-Ritz（M = 16）",
+        "优化规模": size,
+        "Nx (N/m)": int(job["nx"]),
+        "Ny (N/m)": int(job["ny"]),
+        "SF": round(float(job["sf"]), 2),
+        "目标 Ncr (N/m)": round(float(res["target"]), 1),
+        "推荐铺层": res.get("layup") if ok else None,
+        "层数": len(stack) if ok else None,
+        "总厚 (mm)": round(len(stack) * T_PLY, 3) if ok else None,
+        "Ncr (N/m)": round(float(res["ncr"]), 1) if ok else None,
+        "λ": round(float(res["lam"]), 2) if ok else None,
+        "结论": VERDICT_TEXT[verdict_of(res)["overall"]],
+        "计算用时 (s)": round(float(elapsed), 1) if elapsed is not None else None,
+        "记录号": f"{time.strftime('%H%M%S')}-{len(hist) + 1:02d}",
+        "版本": f"v{APP_VERSION}",
+    })
+
+
+def _history_csv(hist: list) -> bytes:
+    """把设计记录导出成 CSV（Excel 友好：带 BOM 的 UTF-8）。"""
+    cols = [c for c in HISTORY_COLS if c in hist[0]]
+    frame = pd.DataFrame(hist)[cols]
+    return frame.to_csv(index=False).encode("utf-8-sig")
+
+
+def _render_history() -> None:
+    """第 1 步底部的设计记录表。"""
+    st.markdown(
+        '<div class="card-head"><span class="card-idx">B</span>'
+        '<span class="card-title">设计记录</span>'
+        '<span class="card-aside">关闭页面即清空</span></div>',
+        unsafe_allow_html=True,
+    )
+    hist = st.session_state.get("history", [])
+    if not hist:
+        st.caption("本次会话还没有设计记录；每完成一次计算会自动追加一条。")
+        return
+    display_cols = ["时间", "工况", "运行模式", "来源", "Nx (N/m)", "Ny (N/m)", "SF",
+                    "目标 Ncr (N/m)", "推荐铺层", "层数", "总厚 (mm)", "Ncr (N/m)",
+                    "λ", "结论", "计算用时 (s)"]
+    frame = pd.DataFrame(hist)[[c for c in display_cols if c in hist[0]]]
+    st.dataframe(
+        frame, hide_index=True, width="stretch",
+        column_config={
+            "SF": st.column_config.NumberColumn("SF", format="%.2f"),
+            "目标 Ncr (N/m)": st.column_config.NumberColumn(
+                "目标 Ncr (N/m)", format="%.1f"),
+            "总厚 (mm)": st.column_config.NumberColumn("总厚 (mm)", format="%.3f"),
+            "Ncr (N/m)": st.column_config.NumberColumn("Ncr (N/m)", format="%.1f"),
+            "λ": st.column_config.NumberColumn("λ", format="%.2f"),
+            "计算用时 (s)": st.column_config.NumberColumn(
+                "计算用时 (s)", format="%.1f"),
+        },
+    )
+    st.caption(
+        f"本次会话共 {len(hist)} 条记录（最多保留 20 条）；"
+        "记录只保存在当前浏览器会话中，关闭页面后自动清除。"
+        "CSV 含运行模式、来源、求解方法与优化规模等字段。"
+    )
+    _dl, _cl = st.columns([1, 1], gap="small")
+    with _dl:
+        st.download_button(
+            "导出记录 (CSV)", data=_history_csv(hist),
+            file_name=f"design_history_{time.strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv", key="export_history", width="stretch",
+        )
+    with _cl:
+        if st.button("清空记录", key="clear_history", width="stretch"):
+            st.session_state["history"] = []
+            st.rerun()
+
+
+def _assumptions_text() -> str:
+    """模型假设与适用范围；只在折叠区展示，全文共用同一段文字。"""
+    return (
+        "**几何与边界**　a = b = 0.50 m 方形层合板；四边简支（SS1，面内可自由滑动）；"
+        "面内均布线载荷 Nx / Ny（N/m）沿板边按单位宽度施加，不含点载、局部压载与预紧。\n\n"
+        "**材料与铺层**　T300/5208 单层按均质正交各向异性、线弹性处理，单层厚 0.125 mm；"
+        "只搜索关于中面对称的铺层；铺层角度在 ±1° 内按等效角度归并（制造公差）。\n\n"
+        "**求解方法**　经典层合板理论（CLT）求 D 矩阵，双正弦级数 Rayleigh–Ritz（M = 16）"
+        "求一阶临界载荷，保留 D16 / D26 弯扭耦合；属线性特征值屈曲，不含几何非线性、"
+        "初始缺陷与后屈曲路径。\n\n"
+        "**未覆盖的真实结构因素**　蜂窝夹芯、加强筋、开口、连接与胶接、边界柔性、"
+        "蒙皮与骨架的耦合、疲劳与损伤、踩踏与鸟撞等局部工况。"
+        "因此三个预设场景是代表性载荷工况下的层合板结构分析，"
+        "不是对应产品的完整有限元模型。"
+    )
+
+
+def _design_conditions(assumptions: bool = False) -> None:
+    """板尺寸、材料与求解器参数（只读说明，三个页面共用）。"""
+    st.markdown(
+        '<div class="card-head"><span class="card-idx">A</span>'
+        '<span class="card-title">设计条件</span>'
+        '<span class="card-aside">SS1 四边简支</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <table class="spec">
+          <tr><th style="width:34%">项目</th><th>取值</th></tr>
+          <tr><td class="k">板尺寸</td><td class="v">a = b = {A_PLATE:.2f} m</td></tr>
+          <tr><td class="k">单层厚度</td><td class="v">t<sub>ply</sub> = {T_PLY} mm</td></tr>
+          <tr><td class="k">材料体系</td><td class="v">T300/5208 碳纤维/环氧</td></tr>
+          <tr><td class="k">材料密度</td><td class="v">ρ = {DENSITY:.0f} kg/m³</td></tr>
+          <tr><td class="k">层数扫描</td><td class="v">N = {ad.N_MIN}…{ad.N_MAX}，对称铺层</td></tr>
+          <tr><td class="k">屈曲求解</td><td class="v">CLT + Rayleigh-Ritz，M = 16</td></tr>
+          <tr><td class="k">优化算法</td><td class="v">NSGA-II · 80 × 60（快速 40 × 30）</td></tr>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <table class="spec side">
+          <tr><th>弹性常数</th><th style="text-align:right">取值</th></tr>
+          <tr><td class="k">E<sub>1</sub></td><td class="v" style="text-align:right">{E1:g} GPa</td></tr>
+          <tr><td class="k">E<sub>2</sub></td><td class="v" style="text-align:right">{E2:g} GPa</td></tr>
+          <tr><td class="k">ν<sub>12</sub></td><td class="v" style="text-align:right">{V12:g}</td></tr>
+          <tr><td class="k">G<sub>12</sub></td><td class="v" style="text-align:right">{G12:g} GPa</td></tr>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""
+        <table class="spec side">
+          <tr><th>强度许用值</th><th style="text-align:right">取值</th></tr>
+          <tr><td class="k">X<sub>t</sub> / X<sub>c</sub>（纵向）</td>
+              <td class="v" style="text-align:right">{ad.XT:g} / {ad.XC:g} MPa</td></tr>
+          <tr><td class="k">Y<sub>t</sub> / Y<sub>c</sub>（横向）</td>
+              <td class="v" style="text-align:right">{ad.YT:g} / {ad.YC:g} MPa</td></tr>
+          <tr><td class="k">S<sub>12</sub>（面内剪切）</td>
+              <td class="v" style="text-align:right">{ad.S12:g} MPa</td></tr>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "*材料数据：弹性常数取 T300/5208 单向带典型值（E1 181 GPa、E2 10.3 GPa、"
+        "ν12 0.28、G12 7.17 GPa、ρ 1600 kg/m³），与公开材料库 cfrp-t300-5208-lamina "
+        "条目一致；强度许用值取自 Daniel I M, Ishai O.《Engineering Mechanics of "
+        "Composite Materials》中 T300/5208 的典型值（Xt/Xc 1500/1500、Yt/Yc 40/246、"
+        "S12 68 MPa），Tsai-Hill 的 FI 以此为基准。正式设计应替换为厂家数据表或自有试验值。*"
+    )
+    if assumptions:
+        with st.expander("模型假设与适用范围"):
+            st.markdown(_assumptions_text())
+
+
+# 载荷输入：滑块与精确值框共用同一对数，改任意一个另一个跟着走
+def _set_load(nx: int, ny: int, sf: float) -> None:
+    """同时写入滑块与精确值框，避免两个控件各自留旧值。"""
+    for key, val in (("nx", nx), ("ny", ny), ("sf", sf)):
+        st.session_state[f"{key}_slider"] = val
+        st.session_state[f"{key}_num"] = val
+
+
+def _sync_from_slider(slider_key: str, num_key: str) -> None:
+    st.session_state[num_key] = st.session_state[slider_key]
+
+
+def _sync_from_number(slider_key: str, num_key: str) -> None:
+    st.session_state[slider_key] = st.session_state[num_key]
+
+
+def _load_input(label: str, bounds: tuple, key: str,
+                fmt: str = "%d") -> float:
+    """一行「滑块 + 精确值框」；两个控件通过 on_change 双向同步。"""
+    lo, hi, step = bounds
+    c_sl, c_num = st.columns([2.4, 1], gap="small",
+                             vertical_alignment="bottom")
+    value = c_sl.slider(label, lo, hi, step=step, format=fmt,
+                        key=f"{key}_slider", on_change=_sync_from_slider,
+                        args=(f"{key}_slider", f"{key}_num"))
+    c_num.number_input(f"{label} 精确值", lo, hi, step=step, format=fmt,
+                       key=f"{key}_num", label_visibility="collapsed",
+                       on_change=_sync_from_number,
+                       args=(f"{key}_slider", f"{key}_num"))
+    return value
+
+
+def _target_metric(preview: float) -> None:
+    """参数页的目标载荷预览（随输入实时刷新）。"""
+    st.markdown(
+        f"""
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="metric-l">目标临界载荷 N<sub>cr,target</sub></div>
+            <div class="metric-v">{preview:,.1f}<small>N/m</small></div>
+            <div class="metric-n">= max(N<sub>x</sub>, N<sub>y</sub>) · SF，随上方滑块实时更新</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _spec_table(headers: list, rows: list,
+                widths: list | None = None,
+                allow_html: bool = False) -> None:
+    """渲染 table.spec：首列作项目名，其余列作取值。
+
+    widths 传入每列百分比时用 colgroup 固定列宽，避免长结论列被挤到折行。
+    allow_html 为 True 时不转义单元格，放行行内 HTML 标记（角标）；只应传本文件
+    自己写的常量文案，不要传用户输入。
+    """
+    def _fmt(value: object) -> str:
+        text = str(value)
+        return text if allow_html else escape(text)
+
+    head = "".join(f"<th>{_fmt(h)}</th>" for h in headers)
+    body = "".join(
+        f'<tr><td class="k">{_fmt(row[0])}</td>'
+        + "".join(f'<td class="v">{_fmt(cell)}</td>' for cell in row[1:])
+        + "</tr>"
+        for row in rows
+    )
+    colgroup = ""
+    if widths:
+        colgroup = "<colgroup>" + "".join(
+            f'<col style="width:{w}%">' for w in widths) + "</colgroup>"
+    st.markdown(
+        f'<table class="spec">{colgroup}<tr>{head}</tr>{body}</table>',
+        unsafe_allow_html=True)
+
+
+def _mode_switch(details: list | None = None) -> None:
+    """演示模式下提供显式升级开关；local 模式只显示状态行。
+
+    传 details 时把口径文字交给调用方统一折叠，避免一屏堆多个展开框。
+    """
+    if IS_DEMO:
+        st.checkbox(
+            "在本次会话运行完整优化（NSGA-II 寻优）", key="run_local",
+            on_change=_remember_mode,
+            help="演示模式默认只读取离线算例、不跑 GA；勾选后本会话改为调用 "
+                 "Auto_Design.py 真正寻优。计算发生在托管该页面的主机上"
+                 "（快速约 10 s，标准约 1 分钟）。",
+        )
+    st.caption(
+        "当前执行路径："
+        + ("演示（只读离线算例）" if _demo_now() else "本机完整计算")
+    )
+    text = (
+        ("只读取离线预设算例，不运行 GA；其他工况退回纯 0° 估算。"
+         if _demo_now()
+         else "调用 NSGA-II 真正寻优，最终 Ncr 按 M = 16 复核。")
+        + f"环境变量 APP_MODE = {APP_MODE}。"
+    )
+    if details is None:
+        with st.expander("查看执行口径"):
+            st.caption(text)
+    else:
+        details.append(text)
+
+
+def _mode_note(nx_in: int, ny_in: int, sf_in: float,
+               details: list | None = None) -> bool:
+    """按当前执行路径给出说明；返回本次是否走快速 GA（演示分支恒为 True）。"""
+    if not _demo_now():
+        fast_in = st.checkbox(
+            "快速模式", value=True, key="fast_chk",
+            help="GA 40×30 + 精修级数 M=10，约 10 s；取消勾选则 80×60，约 1 分钟。"
+                 "最终 Ncr 仍按 M=16 复核。",
+        )
+        st.caption(
+            "NSGA-II 寻优规模："
+            + ("快速 40 × 30" if fast_in else "标准 80 × 60")
+        )
+        return fast_in
+
+    presets_txt = "、".join(
+        f"{int(a)}/{int(b)}（SF {float(c):.2f}）"
+        for a, b, c in sorted(DEMO_PRESETS)
+    )
+    st.caption(f"本模式可用的离线算例 {len(DEMO_PRESETS)} 组；其他组合退回纯 0° 估算。")
+    if details is None:
+        with st.expander("查看本模式可用的离线算例"):
+            st.caption(presets_txt)
+    else:
+        details.append(f"可用离线算例：{presets_txt}。")
+
+    key = (int(nx_in), int(ny_in), round(float(sf_in), 2))
+    isolated = UNVERIFIED_DEMO_PRESETS.get(key)
+    if isolated is not None:
+        st.caption(f"该工况命中的离线算例「{isolated['label']}」来源未核实，已改用纯 0° 估算。")
+    if key not in DEMO_PRESETS:
+        st.caption("当前这组载荷没有离线算例；直接运行只会得到纯 0° 估算结果。")
+    return True
+
+
+def page_mode() -> None:
+    """第 1 步：选择计算模式。"""
+    st.markdown(
+        '<div class="sec-label"><b>01</b>选择模式</div>'
+        '<div class="sec-title">选择计算模式</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("选一个场景进下一步；算完觉得不行，返回改载荷重算就行。")
+
+    presets = [(k, v) for k, v in SCENES.items() if v["preset"] is not None]
+    hero_name, hero_cfg = presets[0]
+    hero = hero_cfg["preset"]
+    hero_desc = (hero_cfg["subtitle"].partition(" · ")[2]
+                 or hero_cfg["subtitle"]).strip()
+
+    # 主案例：整行宽度的核心卡片
+    with st.container(key="modecard1"):
+        img_col, body_col = st.columns([1, 1.05], gap="medium",
+                                        vertical_alignment="center")
+        with img_col:
+            _mode_image(hero_name)
+        with body_col:
+            st.markdown(
+                f'<div class="card-head"><span class="card-idx">M1</span>'
+                f'<span class="card-title">{hero_name}</span>'
+                f'<span class="card-aside">核心工程原型</span></div>'
+                f'<div class="mode-desc">{hero_desc}</div>'
+                f'<div class="mode-spec">N<sub>x</sub> {hero["nx"]:.0f} · N<sub>y</sub> {hero["ny"]:.0f} N/m'
+                f' · SF {hero["sf"]:.2f}</div>'
+                '<div class="mode-desc">真实机翼蒙皮的气动面压与翼肋支撑，'
+                '抽象为四边简支方板（SS1）的代表性工况。</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("选择此预设", key="pick_preset_0", width="stretch"):
+                st.session_state["calc_mode"] = "preset"
+                st.session_state["scene"] = hero_name
+                _set_load(int(hero["nx"]), int(hero["ny"]), float(hero["sf"]))
+                _goto("params")
+
+    # 拓展场景：三个较小的卡片并排
+    st.markdown('<div class="mode-group">其他工况（不同载荷比的算例）</div>', unsafe_allow_html=True)
+    cols = st.columns(3, gap="medium")
+    for i, (name, cfg) in enumerate(presets[1:], start=1):
+        p = cfg["preset"]
+        desc = (cfg["subtitle"].partition(" · ")[2] or cfg["subtitle"]).strip()
+        with cols[i - 1]:
+            with st.container(key=f"modecard{i + 1}"):
+                _mode_image(name)
+                st.markdown(
+                    f'<div class="card-head"><span class="card-idx">M{i + 1}</span>'
+                    f'<span class="card-title">{name}</span></div>'
+                    f'<div class="mode-desc">{desc}</div>'
+                    f'<div class="mode-spec">N<sub>x</sub> {p["nx"]:.0f} · N<sub>y</sub> {p["ny"]:.0f} N/m'
+                    f' · SF {p["sf"]:.2f}</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button("选择此预设", key=f"pick_preset_{i}", width="stretch"):
+                    st.session_state["calc_mode"] = "preset"
+                    st.session_state["scene"] = name
+                    _set_load(int(p["nx"]), int(p["ny"]), float(p["sf"]))
+                    _goto("params")
+
+    with cols[2]:
+        with st.container(key="modecard9"):
+            _mode_image(None)
+            st.markdown(
+                '<div class="card-head"><span class="card-idx">M0</span>'
+                '<span class="card-title">自定义工况</span></div>'
+                '<div class="mode-desc">不套用预设，自行输入 N<sub>x</sub> / N<sub>y</sub> / SF。</div>'
+                '<div class="mode-spec">层数与铺层角度由程序寻优</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("自定义输入", key="pick_custom", width="stretch"):
+                st.session_state["calc_mode"] = "custom"
+                st.session_state["scene"] = None
+                _set_load(500, 500, 1.5)
+                _goto("params")
+
+    st.divider()
+    _mode_switch()
+    st.divider()
+    _design_conditions()
+    st.divider()
+    _render_history()
+
+
+def page_params() -> None:
+    """第 2 步：设定载荷工况。"""
+    scene = st.session_state.get("scene")
+    st.markdown(
+        '<div class="sec-label"><b>02</b>参数设置</div>'
+        '<div class="sec-title">载荷工况</div>',
+        unsafe_allow_html=True,
+    )
+    if scene:
+        st.caption(SCENES[scene]["subtitle"])
+    else:
+        st.caption("自定义工况：自行设定双向载荷与安全系数，层数与铺层由程序寻优。")
+
+    left, right = st.columns([1.1, 1], gap="large")
+
+    with left, st.container(key="paramcard"):
+        st.markdown(
+            '<div class="card-head"><span class="card-idx">B</span>'
+            '<span class="card-title">载荷与安全系数</span>'
+            '<span class="card-aside">面内线载荷 N/m</span></div>',
+            unsafe_allow_html=True,
+        )
+        nx_in = _load_input("纵向载荷 Nx (N/m)", NX_RANGE, "nx")
+        ny_in = _load_input("横向载荷 Ny (N/m)", NX_RANGE, "ny")
+        sf_in = _load_input("安全系数 SF", SF_RANGE, "sf", fmt="%.2f")
+
+        st.caption("支持滑块快捷调节与精确值输入（两者双向同步）。")
+
+        _details: list[str] = [
+            f"Nx / Ny {NX_RANGE[0]}–{NX_RANGE[1]} N/m（步长 {NX_RANGE[2]}），"
+            f"SF {SF_RANGE[0]:.2f}–{SF_RANGE[1]:.2f}（步长 {SF_RANGE[2]:.2f}）。"
+            "右侧精确值框可直接键入，与滑块双向同步。",
+        ]
+        _mode_switch(_details)
+        fast_in = _mode_note(nx_in, ny_in, sf_in, _details)
+        _target_metric(max(nx_in, ny_in) * sf_in)
+        with st.expander("查看口径说明"):
+            for _line in _details:
+                st.caption(_line)
+        _job = st.session_state.get("design_job")
+        if _job and (_job.get("nx"), _job.get("ny"),
+                     round(float(_job.get("sf", 0)), 2), bool(_job.get("fast"))
+                     ) != (int(nx_in), int(ny_in), round(float(sf_in), 2),
+                           bool(fast_in)):
+            st.caption("参数已改动：需重新点「运行计算」才更新结果，"
+                       "结果页上仍是上一次的工况。")
+
+        if st.button("运行计算", type="primary", width="stretch", key="run_btn"):
+            if nx_in == 0 and ny_in == 0:
+                st.error("Nx 与 Ny 不能同时为 0，请至少施加一个方向的载荷。")
+            else:
+                st.session_state["design_job"] = {
+                    "nx": int(nx_in), "ny": int(ny_in),
+                    "sf": float(sf_in), "fast": bool(fast_in),
+                }
+                _goto("result")
+
+    with right:
+        _design_conditions(assumptions=True)
+
+    if st.button("← 返回选择模式", key="back_mode"):
+        _goto("mode")
+
+
+# PDF 报告
+# 优先使用随项目部署的字体，其次才是系统字体；均为 TrueType（.ttf）。
+FONT_CANDIDATES = (
+    r"C:\Windows\Fonts\simhei.ttf",
+    r"C:\Windows\Fonts\Deng.ttf",
+    r"C:\Windows\Fonts\simkai.ttf",
+    r"C:\Windows\Fonts\msyh.ttf",
+    r"C:\Windows\Fonts\simsun.ttf",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+)
+
+
+def _cjk_font_path():
+    """查找可用的中文字体路径，找不到返回 None（PDF 会退回内置字体）。"""
+    here = Path(__file__).resolve().parent
+    for p in (here / "fonts" / "simhei.ttf",
+              here.parent / "fonts" / "simhei.ttf",
+              here / "simhei.ttf"):
+        if p.exists():
+            return p
+    for name in FONT_CANDIDATES:
+        p = Path(name)
+        if p.exists():
+            return p
+    return None
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def build_report_pdf(res: dict):
+    """把当前设计结果渲染成单页 PDF 报告，返回 bytes；无中文字体时返回 None。"""
+    if not HAS_FPDF:
+        return None
+    font = _cjk_font_path()
+    if font is None:          # 内置 Helvetica 无中文字形，宁可不出报告也不出乱码
+        return None
+
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_title("纤层智构 · 轻量化复合材料铺层智能优化 - 设计方案报告")
+    pdf.add_page()
+    pdf.add_font("CJK", "", str(font))
+    fam = "CJK"
+
+    # 标识（缺失时跳过，不影响出报告）
+    _logo_pdf = _figure_path("logo_mark_512.png")
+    if _logo_pdf is not None:
+        pdf.image(str(_logo_pdf), x=(pdf.w - 16) / 2, y=pdf.get_y() + 1, w=16)
+        pdf.ln(20)
+
+    # 标题
+    pdf.set_font(fam, size=18)
+    pdf.set_text_color(15, 23, 42)
+    pdf.cell(0, 12, "纤层智构",
+             new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_font(fam, size=11)
+    pdf.set_text_color(100, 116, 139)
+    pdf.cell(0, 8, "轻量化复合材料铺层智能优化 · 设计方案报告",
+             new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.ln(2)
+    pdf.set_draw_color(203, 213, 225)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+    pdf.ln(6)
+
+    # 关键参数
+    ncr = float(res["ncr"])
+    target = float(res["target"])
+    rows = [
+        ("当前工况", f"Nx = {res['nx']:.0f} N/m，Ny = {res['ny']:.0f} N/m，"
+                     f"SF = {res['sf']:.2f}"),
+        ("运行模式", f"APP_MODE = {mode_text()}"),
+        ("计算来源", SOURCE_INFO[source_of(res)][0]
+                     + "（" + SOURCE_INFO[source_of(res)][1] + "）"),
+        ("目标临界载荷", f"{target:,.1f} N/m"),
+        ("推荐铺层", str(res["layup"])),
+        ("层数 / 总厚度", f"N = {res['n_plies']} 层，t = {res['thickness']:.2f} mm"),
+        ("面密度", f"{res['areal']:.2f} kg/㎡"),
+        ("临界载荷 Ncr", f"{ncr:,.1f} N/m"),
+        ("临界倍数 λ", f"{res['lam']:.2f}（要求 ≥ {res['sf']:.2f}）"),
+        ("强度校核 FI", f"{res['fi']:.2e}（Tsai-Hill，< 1 为安全）"),
+        ("校核结论", VERDICT_TEXT[verdict_of(res)["overall"]]),
+    ]
+    for label, value in rows:
+        pdf.set_font(fam, size=11)
+        pdf.set_fill_color(241, 245, 249)
+        pdf.set_text_color(71, 85, 105)
+        pdf.cell(36, 9, " " + label, fill=True)
+        pdf.set_text_color(15, 23, 42)
+        pdf.multi_cell(0, 9, " " + value, align="L",
+                       new_x="LMARGIN", new_y="NEXT")
+
+    # 结论：与页面用同一套判定
+    pdf.ln(5)
+    pdf.set_font(fam, size=12)
+    overall = verdict_of(res)["overall"]
+    if overall == "pass":
+        pdf.set_text_color(22, 163, 74)
+        verdict = (f"整体校核通过：Ncr = {ncr:,.1f} N/m ≥ 目标 {target:,.1f} N/m"
+                   f"（等效安全系数 λ = {res['lam']:.2f} ≥ {res['sf']:.2f}），"
+                   f"Tsai-Hill FI = {res['fi']:.2e} < 1。")
+    elif overall == "unverified":
+        pdf.set_text_color(217, 119, 6)
+        verdict = ("未验证：本报告对应演示模式下的纯 0° 估算，铺层角度没有做优化，"
+                   "数值只代表该 0° 铺层，不能作为设计结论。")
+    elif overall == "verification_failed":
+        pdf.set_text_color(220, 38, 38)
+        verdict = ("高阶复核未通过：搜索阶段（快速模式，M = 10）选出的方案在 M = 16 复核下"
+                   "不满足判据，本报告不能作为设计结论。")
+    elif overall == "buckling_fail":
+        pdf.set_text_color(220, 38, 38)
+        verdict = (f"整体未通过：屈曲承载不足（Ncr = {ncr:,.1f} N/m < 目标 "
+                   f"{target:,.1f} N/m），需增加层数或重新优化铺层角度。")
+    elif overall == "strength_fail":
+        pdf.set_text_color(220, 38, 38)
+        verdict = (f"整体未通过：屈曲满足（Ncr = {ncr:,.1f} N/m ≥ 目标 "
+                   f"{target:,.1f} N/m），但 Tsai-Hill FI = {res['fi']:.2e} ≥ 1，"
+                   "需增加厚度。")
+    else:
+        pdf.set_text_color(220, 38, 38)
+        verdict = (f"整体未通过：屈曲（Ncr = {ncr:,.1f} N/m，目标 {target:,.1f} N/m）"
+                   f"与强度（FI = {res['fi']:.2e}）均不满足。")
+    pdf.multi_cell(0, 8, "结论：" + verdict, align="L",
+                   new_x="LMARGIN", new_y="NEXT")
+
+    if res["fi"] >= 1.0:
+        pdf.set_text_color(220, 38, 38)
+        pdf.multi_cell(0, 8, f"面内强度：Tsai-Hill FI = {res['fi']:.2e} ≥ 1，不通过。",
+                       align="L", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.set_text_color(71, 85, 105)
+        pdf.multi_cell(0, 8, f"面内强度：Tsai-Hill FI = {res['fi']:.2e} < 1，通过。",
+                       align="L", new_x="LMARGIN", new_y="NEXT")
+
+    # 页脚
+    pdf.ln(4)
+    pdf.set_font(fam, size=9)
+    pdf.set_text_color(148, 163, 184)
+    pdf.multi_cell(0, 6,
+                   f"本报告依据 v{APP_VERSION} 的 CLT + Rayleigh-Ritz 计算结果生成"
+                   f"（{time.strftime('%Y-%m-%d %H:%M')}），"
+                   "仅用于方案比选与设计参考。",
+                   align="L", new_x="LMARGIN", new_y="NEXT")
+
+    buf = io.BytesIO()
+    buf.write(bytes(pdf.output()))
+    return buf.getvalue()
+
+
+# 页面路由
+for _key, _default in (
+    ("step", "mode"),
+    ("calc_mode", None),
+    ("scene", None),
+    ("nx_slider", 500),
+    ("ny_slider", 500),
+    ("sf_slider", 1.5),
+    ("nx_num", 500),
+    ("ny_num", 500),
+    ("sf_num", 1.5),
+    ("design_job", None),
+    ("_res_cache", {}),
+    ("history", []),
+):
+    st.session_state.setdefault(_key, _default)
+
+# 报头：三个页面共用
+_logo_src = _logo_uri()
+_logo_html = (f'<img class="masthead-logo" src="{_logo_src}" alt="">'
+              if _logo_src else "")
+st.markdown(
+    f"""
+    <div class="masthead">
+      <div class="masthead-left">
+        {_logo_html}
+        <div class="masthead-brand">纤层智构</div>
+      </div>
+      <div class="masthead-meta">CLT<span class="sep">/</span>Rayleigh-Ritz<span class="sep">/</span>NSGA-II<span class="sep">/</span>v{APP_VERSION}</div>
+    </div>
+    <div class="masthead-sub">轻量化复合材料铺层智能优化 · 四边简支方板 T300/5208</div>
+    """,
+    unsafe_allow_html=True,
+)
+
+step_bar(st.session_state["step"])
+
+if st.session_state["step"] == "mode":
+    page_mode()
+    st.stop()
+
+if st.session_state["step"] == "params":
+    page_params()
+    st.stop()
+
+# 计算结果页
+job = st.session_state.get("design_job")
+if job is None:
+    _goto("mode")
+
+scene = st.session_state.get("scene")
+
+st.markdown(
+    '<div class="sec-label"><b>03</b>计算结果</div>'
+    '<div class="sec-title">设计结果与校核</div>',
+    unsafe_allow_html=True,
+)
+_head_l, _head_m, _head_r = st.columns([2.4, 1, 1], gap="small")
+with _head_l:
+    st.caption(
+        ("预设：" + scene if scene else "自定义工况")
+        + f"、Nx = {job['nx']:.0f} N/m、Ny = {job['ny']:.0f} N/m"
+        + f"、SF = {job['sf']:.2f}"
+    )
+with _head_m:
+    if st.button("← 修改参数", key="back_params", width="stretch"):
+        _goto("params")
+with _head_r:
+    if st.button("开始新的设计", key="restart_top", width="stretch"):
+        _restart()
+
+# 计算结果按 job 缓存，切换页签不再重复求解
+_cache_key = (job["nx"], job["ny"], job["sf"], job["fast"], _demo_now())
+_cached = st.session_state.get("_res_cache")
+
+if _cached and _cached["key"] == _cache_key:
+    res = _cached["res"]
+    _elapsed = _cached.get("elapsed")
+else:
+    # 底层只提供了「一次调用算完」的接口，没有分阶段的回调，
+    # 所以这里只给一条与实际执行一致的状态，不按阶段造进度。
+    _hit_preset = (int(round(job["nx"])), int(round(job["ny"])),
+                   round(float(job["sf"]), 2)) in DEMO_PRESETS
+    if _demo_now() and _hit_preset:
+        _label = "正在读取离线预设算例（不运行 GA）..."
+        _hint = "读取事先算好的结果，通常不到 1 秒。"
+    elif _demo_now():
+        _label = "正在计算纯 0° 铺层（层数扫描，不运行 GA）..."
+        _hint = "只对纯 0° 铺层做层数扫描与强度校核，通常不到 1 秒。"
+    else:
+        _label = ("正在运行 NSGA-II 寻优（层数扫描 + 铺层角度优化）..."
+                  if not job["fast"] else
+                  "正在运行 NSGA-II 寻优（快模式 40 × 30）...")
+        _hint = "标准模式约 1 分钟，快模式约 10 秒；期间页面不会输出其他内容。"
+
+    _t0 = time.time()
+    _slot = st.empty()
+    with _slot.container(), st.status(_label, expanded=True) as status:
+        st.write(_hint)
+        try:
+            if _demo_now():
+                res = demo_design(job["nx"], job["ny"], job["sf"])
+            else:
+                res = auto_design(job["nx"], job["ny"], job["sf"], job["fast"])
+        except Exception as exc:                      # noqa: BLE001
+            status.update(label="计算失败", state="error", expanded=True)
+            st.error(f"计算过程中出现异常，没有产生结果："
+                     f"{type(exc).__name__}: {exc}")
+            st.caption("这是程序异常，不代表设计不达标。")
+            with st.expander("怎么处理"):
+                st.caption("可返回上一步调整参数后重试；若重复出现，"
+                           "请把上面的异常信息反馈给开发者。")
+            if st.button("← 返回修改参数", key="back_params_from_error_calc"):
+                _goto("params")
+            st.stop()
+        _dt = time.time() - _t0
+        status.update(label=f"计算完成（用时 {_dt:.1f} s）",
+                      state="complete", expanded=False)
+    # 算完就把状态条收掉，用时挪到下面的设计条件行，页面上不留一个空框
+    _elapsed = time.time() - _t0
+    _slot.empty()
+
+    st.session_state["_res_cache"] = {"key": _cache_key, "res": res,
+                                      "elapsed": _elapsed}
+    _record_design(res, job, _elapsed)
+    # 新计算结果回到第一页，避免沿用上一次在第三页停留的位置
+    st.session_state["_tab_default"] = "设计结果"
+
+st.caption(
+    f"**设计条件**：Nx = {res['nx']:.0f} N/m、Ny = {res['ny']:.0f} N/m、"
+    f"SF = {res['sf']:.2f}；"
+    f"**Ncr 目标值 = max(Nx, Ny)·SF = {res['target']:,.0f} N/m**；"
+    f"{'双向受压' if res['biaxial'] else '单向受压'}；"
+    f"运行模式 {mode_text()}、来源 {SOURCE_INFO[source_of(res)][0]}"
+    + (f"；计算用时 {_elapsed:.1f} s" if _elapsed is not None else "")
+)
+
+# 不可行分支
+if res["status"] == "infeasible":
+    st.error(
+        f"纯 0° 基准在 N ≤ {ad.N_MAX} 层内未找到可行层数：最高 Ncr = "
+        f"{res['rows'][-1]['ncr']:,.0f} N/m < Ncr 目标值 = {res['target']:,.0f} N/m。"
+        f"按 Ncr ∝ t³ 外推，约需 {res['need_plies']:.1f} 层"
+        f"（{res['need_plies'] * T_PLY:.2f} mm）。"
+    )
+    st.markdown("#### 纯 0° 层数扫描明细")
+    st.dataframe(scan_table(res["rows"], res["target"]),
+                 hide_index=True, width="stretch")
+    st.caption(
+        "说明：这个分支只按纯 0°/90° 铺层判断层数，**没有搜索铺层角度**。"
+        f"同层数下 ±45 等铺层能提供更高的双向屈曲载荷（本机验证：N = {ad.N_MAX}、"
+        "Nx = Ny = 2000 N/m 时约为纯 0° 的 2 倍），"
+        "所以这里只能说明「纯 0° 基准在 N ≤ 20 内不满足目标」，不能断定该工况整体无可行铺层。"
+    )
+    st.caption("建议：减小 Nx / Ny / SF，或改用更高刚度的材料体系。")
+    if st.button("← 返回修改参数", key="back_params_from_error"):
+        _goto("params")
+    st.stop()
+
+# 结果区
+mode = buckling_mode(tuple(res["stack"]), res["nx"], res["ny"])
+ncr, target, lam = res["ncr"], res["target"], res["lam"]
+
+tab1, tab2, tab3 = st.tabs(
+    ["设计结果", "失稳模态", "性能与参考对比"],
+    default=st.session_state.get("_tabs3_saved", "设计结果"),
+    key="_tabs3",
+    on_change=_remember_tab,
+)
+
+# Tab 1
+with tab1:
+    with st.container(key="card1"):
+        st.markdown(
+            '<div class="card-head"><span class="card-idx">01</span>'
+            '<span class="card-title">设计结果</span>'
+            '<span class="card-aside">CLT + Rayleigh-Ritz · M = 16</span></div>',
+            unsafe_allow_html=True,
+        )
+        verdict_block(res)
+        if scene == "新能源电池包上盖":
+            st.caption("另：实际设计时还要补局部踩踏刚度校核。")
+
+        src = source_of(res)
+        st.caption(source_line(res))
+        if src == "preset":
+            st.caption(f"对应预设算例：{res.get('source_label', '')}。")
+        if res.get("isolated_preset"):
+            st.caption(
+                "该工况命中的离线算例来源尚未核实，本版本未采用，"
+                "结果按纯 0° 估算给出。"
+            )
+
+        layup_card(res["layup"])
+
+        st.markdown(
+            f"""
+            <div class="metric-grid">
+              <div class="metric main">
+                <div class="metric-l">临界屈曲载荷 N<sub>cr</sub></div>
+                <div class="metric-v">{ncr:,.1f}<small>N/m</small></div>
+                <div class="metric-n">N<sub>cr</sub> = λ · max(N<sub>x</sub>, N<sub>y</sub>)，λ 由 CLT + Rayleigh-Ritz 求解</div>
+              </div>
+              <div class="metric">
+                <div class="metric-l">相对目标</div>
+                <div class="metric-v">{(ncr / target - 1) * 100:+.1f}<small>%</small></div>
+                <div class="metric-n">目标 N<sub>cr</sub> = max(N<sub>x</sub>, N<sub>y</sub>) · SF = {target:,.0f} N/m</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("#### 铺层截面")
+        st.plotly_chart(
+            figure_layup(res["stack"]),
+            width="stretch",
+            config={"displayModeBar": False},
+        )
+        st.markdown(
+            '<div class="layup-legend">'
+            f'<span style="background:{LAYUP_COLORS["0"]}"></span>0°'
+            f'<span style="background:{LAYUP_COLORS["90"]}"></span>90°'
+            f'<span style="background:{LAYUP_COLORS["+45"]}"></span>+45°'
+            f'<span style="background:{LAYUP_COLORS["-45"]}"></span>−45°'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            f"""
+            <div class="metric-grid">
+              <div class="metric">
+                <div class="metric-l">铺层数 N</div>
+                <div class="metric-v">{res['n_plies']}<small>层</small></div>
+              </div>
+              <div class="metric">
+                <div class="metric-l">总厚度 t</div>
+                <div class="metric-v">{res['thickness']:.2f}<small>mm</small></div>
+              </div>
+              <div class="metric">
+                <div class="metric-l">面密度</div>
+                <div class="metric-v">{res['areal']:.2f}<small>kg/m²</small></div>
+              </div>
+              <div class="metric">
+                <div class="metric-l">Tsai-Hill FI</div>
+                <div class="metric-v">{res['fi']:.2e}</div>
+                <div class="metric-n">无量纲，&lt; 1 为安全</div>
+              </div>
+              <div class="metric">
+                <div class="metric-l">临界倍数 <span class="lc">λ</span></div>
+                <div class="metric-v">{lam:.2f}</div>
+                <div class="metric-n">SF = {res['sf']:.2f}，λ {'≥' if lam >= res['sf'] else '<'} SF</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if res["biaxial"]:
+            balanced = ad.balance_penalty(
+                ad.half_stack(res["theta4"], res["n_plies"])
+            ) < 0.02
+            st.caption(
+                f"均衡性：ΣQ16 = {res['s16']:+.3f} GPa，ΣQ26 = {res['s26']:+.3f} GPa → "
+                f"{'均衡铺层（A16 = A26 = 0）' if balanced else '非均衡（存在拉剪耦合）'}"
+            )
+
+        scan = res.get("scan_rows") or []
+        if scan:
+            st.markdown("#### 逐层数优化与选择")
+            _mm = res.get("min_margin", 1.2)
+            st.caption(
+                f"对每个允许层数分别优化角度后比较：第一个满足 "
+                f"λ ≥ {_mm:.1f}·SF（= {_mm * res['sf']:.2f}）、逐层 FI < 1、"
+                f"对称且均衡的层数即为最轻可行方案。"
+            )
+            st.dataframe(_scan_df(scan, res["sf"], _mm),
+                         hide_index=True, width="stretch")
+            nxt = res.get("next_thinner")
+            if nxt and nxt["n_plies"] < res["n_plies"]:
+                st.caption(
+                    f"{nxt['n_plies']} 层最优 λ = {nxt['lam']:.2f} "
+                    f"< {_mm * res['sf']:.2f}，故 N = {res['n_plies']} 层是最轻可行方案。"
+                )
+            back = res.get("backup")
+            if back:
+                _dw = back["areal"] - res["areal"]
+                _m0 = res["lam"] / res["sf"]
+                _m1 = back["lam"] / res["sf"]
+                st.markdown(
+                    f'<div class="metric-grid">'
+                    f'<div class="metric"><div class="metric-l">备选方案（更大裕度）</div>'
+                    f'<div class="metric-v">{back["n_plies"]}<small>层</small></div>'
+                    f'<div class="metric-n">{pretty_layup(back["layup"])} · '
+                    f'{back["areal"]:.2f} kg/m²</div></div>'
+                    f'<div class="metric"><div class="metric-l">相对主推荐</div>'
+                    f'<div class="metric-v">+{_dw:.2f}<small>kg/m²</small></div>'
+                    f'<div class="metric-n">λ/SF {_m0:.2f} → {_m1:.2f}</div></div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    f"备选规则：λ ≥ {res.get('margin_factor', 1.5):.1f}·SF。"
+                    "主推荐省料、备选更稳，二者由使用者按项目要求选择。"
+                )
+
+        with st.expander("同层数纯 0° 基准（对照用）"):
+            st.dataframe(scan_table(res["rows"], target),
+                         hide_index=True, width="stretch")
+
+        # 导出设计方案报告
+        st.divider()
+        pdf_bytes = build_report_pdf(res)
+        if pdf_bytes:
+            st.download_button(
+                "导出设计方案报告 (PDF)",
+                data=pdf_bytes,
+                file_name="Report.pdf",
+                mime="application/pdf",
+                key="download_report",
+                width="stretch",
+            )
+        elif not HAS_FPDF:
+            st.caption("PDF 导出不可用：未安装 fpdf2（pip install -r requirements.txt）。")
+        else:
+            st.caption(
+                "PDF 导出不可用：未找到中文字体（如 "
+                r"C:\Windows\Fonts\simhei.ttf）。"
+            )
+
+# Tab 2
+with tab2:
+    with st.container(key="card2"):
+        st.markdown(
+            '<div class="card-head"><span class="card-idx">02</span>'
+            '<span class="card-title">失稳模态</span>'
+            '<span class="card-aside">SS1 四边简支</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(f"#### 一阶屈曲模态 (m = {mode['m']}, n = {mode['n']})")
+        choice = st.radio(
+            "显示模态",
+            ["m = 1, n = 1（基本模态）",
+             f"Ritz 临界模态 (m = {mode['m']}, n = {mode['n']})"],
+            horizontal=True, key="mode_choice",
+        )
+        if choice.startswith("m = 1"):
+            Z, mode_label = mode["w11"], "m = 1, n = 1（基本模态）"
+        else:
+            Z, mode_label = mode["w_actual"], f"m = {mode['m']}, n = {mode['n']}（Ritz 临界）"
+
+        st.caption(
+            f"当前显示：**{mode_label}**；板 a = b = {A_PLATE:.2f} m，四边简支 (SS1)"
+        )
+        st.plotly_chart(
+            figure_mode_3d(mode["x"], mode["y"], Z),
+            width="stretch", config=PLOTLY_CONFIG,
+        )
+        st.caption(
+            f"色标 = w / w_max（无量纲）；Ritz 临界模态 m = {mode['m']}, n = {mode['n']}。"
+        )
+
+# Tab 3
+with tab3:
+    with st.container(key="card3"):
+        st.markdown(
+            '<div class="card-head"><span class="card-idx">03</span>'
+            '<span class="card-title">性能与参考对比</span>'
+            '<span class="card-aside">基准对比 / 离线算例</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(f"#### 同层数基准对比（N = {res['n_plies']} 层）")
+        st.plotly_chart(
+            figure_compare(res["base_ncr"], ncr, target),
+            width="stretch", config={"displaylogo": False},
+        )
+
+        gain = (ncr / res["base_ncr"] - 1.0) * 100.0 if res["base_ncr"] > 0 else 0.0
+        st.markdown(
+            f"""
+            <div class="metric-grid">
+              <div class="metric">
+                <div class="metric-l">较 [0]{subscript(res['n_plies'])}<span class="lc">s</span> 基准的 N<sub>cr</sub> 提升</div>
+                <div class="metric-v">{gain:+.1f}<small>%</small></div>
+                <div class="metric-n">基准为同层数 N 下的纯 0° 铺层，与优化铺层严格同厚度</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"量化对比：基准 [0]{subscript(res['n_plies'])}s = {res['base_ncr']:,.1f} N/m → "
+            f"优化方案 = {ncr:,.1f} N/m，增量 {ncr - res['base_ncr']:+,.1f} N/m"
+            f"（{gain:+.1f} %）；Ncr 目标值 = {target:,.1f} N/m。"
+        )
+        if not res["biaxial"]:
+            st.caption("单向受压时纯 0° 铺层的 D11 最大，已是最优解，角度优化没有提升空间。")
+
+        st.markdown("#### D 矩阵对比（同层数）")
+        d0, d1 = res["d_zero"], res["d_opt"]
+        n_ply, thick = res["n_plies"], res["thickness"]
+        _spec_table(
+            ["指标", f"纯 0°（N={n_ply}）", f"优化（N={n_ply}）"],
+            [
+                ("D<sub>11</sub> (GPa·mm³)", f"{d0[0][0]:.1f}", f"{d1[0][0]:.1f}"),
+                ("D<sub>22</sub> (GPa·mm³)", f"{d0[1][1]:.1f}", f"{d1[1][1]:.1f}"),
+                ("D<sub>66</sub> (GPa·mm³)", f"{d0[2][2]:.1f}", f"{d1[2][2]:.1f}"),
+                ("D<sub>16</sub> (GPa·mm³)", f"{d0[0][2]:.2f}", f"{d1[0][2]:.2f}"),
+                ("厚度 (mm)", f"{thick:.2f}", f"{thick:.2f}"),
+            ],
+            allow_html=True,
+        )
+        st.caption("厚度相同，Ncr 的差异全部来自 D 矩阵；D16 由铺层次序决定，"
+                   "角度配对只保证 A16 = A26 = 0。")
+
+        st.divider()
+        st.markdown("#### 解的交叉验证")
+        st.caption("同一套铺层与载荷，分别给出解析解、Ritz 与本机有限元的结果；"
+                   "本机有限元需点击表格下方的按钮现场求解。")
+        with st.expander("查看对照口径"):
+            st.caption(
+                "差异一栏统一表示「Ritz 相对该方法」；只有铺层与载荷都对应"
+                "同一个模型时才给出百分数，否则只标明不可比较及原因。"
+                "这些是数值对照，不是试验验证误差。"
+            )
+
+        nx_cur, ny_cur = float(res["nx"]), float(res["ny"])
+        ncr_ritz = float(res["ncr"])
+        scale = max(nx_cur, ny_cur)
+        D_cur = ad.d_of_angles(res["stack"])
+        _d11 = max(abs(float(D_cur[0][0])), 1e-12)
+        is_ortho = (abs(float(D_cur[0][2])) < 1e-6 * _d11
+                    and abs(float(D_cur[1][2])) < 1e-6 * _d11)
+
+        rows = [{
+            "分析方法": "Ritz 法（CLT + 双向正弦级数，M = 16）",
+            "Ncr (N/m)": f"{ncr_ritz:,.1f}",
+            "模态": f"m = {mode['m']}, n = {mode['n']}",
+            "相对差异": "—（基准）",
+            "结论": "当前设计采用的解",
+        }]
+
+        if is_ortho:
+            lam_nav, m_nav, n_nav = navier_orthotropic(
+                D_cur, A_PLATE, B_PLATE, nx_cur, ny_cur
+            )
+            ncr_nav = float(lam_nav) * scale
+            rel_nav = (ncr_nav - ncr_ritz) / ncr_ritz if ncr_ritz else 0.0
+            rows.append({
+                "分析方法": "Navier 解析解（特殊正交异性板）",
+                "Ncr (N/m)": f"{ncr_nav:,.1f}",
+                "模态": f"m = {m_nav}, n = {n_nav}",
+                "相对差异": "< 1e-12" if abs(rel_nav) < 1e-12 else f"{rel_nav:+.2e}",
+                "结论": "D16 = D26 = 0，Navier 解与 Ritz 应严格一致",
+            })
+        else:
+            rows.append({
+                "分析方法": "Navier 解析解（特殊正交异性板）",
+                "Ncr (N/m)": "—",
+                "模态": "—",
+                "相对差异": "—",
+                "结论": "不适用：D16 / D26 ≠ 0",
+            })
+
+        # 级数收敛外推：含 D16/D26 的铺层没有闭式解，用同一级数在 M = 16…40 上的值外推，
+        # 得到"继续加密基函数会收敛到哪里"，从而把 M = 16 的截断误差变成一个可核对的数字。
+        try:
+            _sx = _series_extrap(res, nx_cur, ny_cur)
+            _sx_rel = (ncr_ritz - _sx["ncr"]) / _sx["ncr"] * 100.0
+            rows.append({
+                "分析方法": "级数解外推（M = 16/24/32/40）",
+                "Ncr (N/m)": f"{_sx['ncr']:,.1f}",
+                "模态": "—",
+                "相对差异": f"{_sx_rel:+.3f}%",
+                "结论": "同一级数解的外推值，与 M = 16 之差即截断误差",
+            })
+        except Exception:  # noqa: BLE001
+            _sx = None
+
+        # 主推荐的铺层通常与离线算例不同（D1 之后主推荐变薄）：
+        # 此时不拿备选硬凑"可比"，而是单独给一行"参考铺层自身的 Ritz 解"，
+        # 让 Ritz vs ABAQUS 的对照与"当前设计选了哪套铺层"解耦。
+        cmp_ab = aba_compare(res, nx_cur, ny_cur)
+        _ab_res = res
+        ref = cmp_ab["ref"]
+
+        # 参考铺层自身的 Ritz 解 → 与"当前设计选了哪套铺层"解耦的稳定对照行
+        _ref_row = None
+        if ref is not None and cmp_ab.get("ref_ritz") is not None:
+            _rd = cmp_ab.get("ref_delta_pct")
+            _ref_row = {
+                "分析方法": (f"Ritz 法（参考铺层 {ref['n_plies']} 层，"
+                             f"M = {M_VERIFY}）"),
+                "Ncr (N/m)": f"{cmp_ab['ref_ritz']:,.1f}",
+                "模态": "—",
+                "相对差异": ("—" if _rd is None
+                             else f"{_rd:+.2f}%（参考铺层自身）"),
+                "结论": "参考铺层自身的数值差异，与当前设计无关",
+            }
+
+        _afe_cmd = _abaqus_cmd()
+        _has_abq = _afe_cmd is not None
+
+        # 表里只留一行 ABAQUS，按本机能力切换含义：
+        #   有 abaqus 命令 → 「本机 FE 实算当前铺层」（离线算例降为表下一句备注）
+        #   没有 abaqus 命令 → 「随包离线参考算例（v1.0）」并注明不能替代现场复核
+        if not _has_abq:
+            if _ref_row is not None:
+                rows.append(_ref_row)
+            if cmp_ab["state"] == "no_case":
+                rows.append({
+                    "分析方法": "ABAQUS 离线参考算例（v1.0）",
+                    "Ncr (N/m)": "—",
+                    "模态": "—",
+                    "相对差异": "—",
+                    "结论": "该工况没有随包参考算例",
+                })
+            elif cmp_ab["state"] == "stack_mismatch":
+                rows.append({
+                    "分析方法": "ABAQUS 离线参考算例（v1.0，参考铺层）",
+                    "Ncr (N/m)": f"{ref['ncr']:,.1f}",
+                    "模态": "—",
+                    "相对差异": "—",
+                    "结论": ABA_STATE["stack_mismatch"],
+                })
+            else:
+                _delta = cmp_ab["delta_pct"]
+                rows.append({
+                    "分析方法": "ABAQUS 离线参考算例（v1.0，参考铺层）",
+                    "Ncr (N/m)": f"{ref['ncr']:,.1f}",
+                    "模态": "—",
+                    "相对差异": ("—" if _delta is None
+                                 else f"{_delta:+.2f}%"),
+                    "结论": ABA_STATE["conditional"],
+                })
+
+        _tbl_slot = st.empty()
+
+        def _emit_cross_table(_fe_now):
+            """把交叉验证表画到一个可重画的槽里（点完复核后就地更新）。"""
+            _rows = list(rows)
+            if _has_abq:
+                if _fe_now is not None:
+                    _mfe = _fe_now.get("mode")
+                    _rows.append({
+                        "分析方法": "ABAQUS 实算（本机 FE，当前铺层）",
+                        "Ncr (N/m)": f"{_fe_now['ncr_fe']:,.1f}",
+                        "模态": (f"m = {_mfe['m']}, n = {_mfe['n']}"
+                                 if _mfe else "—（未解析）"),
+                        "相对差异": f"{_fe_now['delta_pct']:+.2f}%",
+                        "结论": "同一铺层、同一载荷与边界的数值互校",
+                    })
+                else:
+                    _rows.append({
+                        "分析方法": "ABAQUS 实算（本机 FE，当前铺层）",
+                        "Ncr (N/m)": "未运行",
+                        "模态": "—",
+                        "相对差异": "—",
+                        "结论": "点表格下方的按钮现场生成并求解",
+                    })
+            _spec_table(
+                ["分析方法", "Ncr (N/m)", "模态", "Ritz 相对该方法", "结论"],
+                [[r["分析方法"], r["Ncr (N/m)"], r["模态"],
+                  r["相对差异"], r["结论"]] for r in _rows],
+                widths=[22, 12, 17, 19, 30],
+            )
+            if _fe_now is not None:
+                _cost = _fe_now.get("elapsed")
+                _mfe = _fe_now.get("mode")
+                _mode_txt = (
+                    f"，一阶模态 m = {_mfe['m']}, n = {_mfe['n']}"
+                    f"（位移场投影相关度 {_mfe['corr']:.4f}）"
+                    if _mfe else ""
+                )
+                st.caption(
+                    f"本机 ABAQUS 实算：一阶特征值 {_fe_now['eigen']:.4f} → "
+                    f"Ncr = {_fe_now['ncr_fe']:,.1f} N/m，Ritz 相对 FE "
+                    f"{_fe_now['delta_pct']:+.2f}%"
+                    + _mode_txt
+                    + (f"，求解用时 {_cost:.1f} s" if _cost else "")
+                    + f"（{_fe_now['time']}）。"
+                )
+
+        _fe = _fe_run_for(res, nx_cur, ny_cur) if _has_abq else None
+        with _tbl_slot.container():
+            _emit_cross_table(_fe)
+
+        if _sx is not None:
+            st.caption(
+                "级数解外推：含 D16/D26 的铺层没有闭式解（SS1 的弯矩条件里出现 w,xy，"
+                "正弦级数不再对角化，这也是 Navier 只在 D16 = D26 = 0 时成立的原因），"
+                "所以「解析解」只能以级数形式存在。表中把同一级数解在 "
+                f"M = 16/24/32/40 上外推（拟合 ncr ∝ A + B·M^-p，p ≈ {_sx['p']:.2f}），"
+                "用它与 M = 16 的差量化截断误差；方法的独立性由下方 ABAQUS 有限元提供。"
+            )
+
+        if _has_abq:
+            # 离线算例不再占表行，只留一句可追溯的备注
+            if cmp_ab["state"] == "no_case":
+                st.caption(
+                    f"随包离线参考算例（v1.0）不含 ({nx_cur:.0f}, {ny_cur:.0f}) "
+                    "这组载荷；本表的 ABAQUS 一行来自本机现场求解。"
+                )
+            else:
+                st.caption(
+                    f"随包离线参考算例（v1.0）：参考铺层 "
+                    f"{pretty_layup(cmp_ab['ref_layup'])}（{ref['n_plies']} 层），"
+                    f"一阶特征值 {ref['eigen']:.4f}，按参考载荷换算 "
+                    f"Ncr = {ref['ncr']:,.1f} N/m；模型源文件与结果库见包内 "
+                    "abaqus/ 目录（Job_*.inp、Job_*.odb，可单独复跑）。"
+                )
+        else:
+            if cmp_ab["state"] == "no_case":
+                st.warning(
+                    "本机未检测到 `abaqus` 命令，无法对当前铺层做现场复核；"
+                    f"且随包离线参考算例也不含 ({nx_cur:.0f}, {ny_cur:.0f}) "
+                    "这组载荷，本表只剩 Ritz 解与适用时的 Navier 解。"
+                )
+            elif cmp_ab["state"] == "stack_mismatch":
+                st.caption(
+                    f"本机未检测到 `abaqus` 命令，无法对当前铺层做现场复核；"
+                    f"上面的参考值是随包算例 {ref['odb']} 的铺层"
+                    f"（{pretty_layup(cmp_ab['ref_layup'])}，{ref['n_plies']} 层）"
+                    f"算出来的 Ncr = {ref['ncr']:,.1f} N/m。"
+                    "当前铺层与之不同，两者不是同一个模型，因此不计算也不显示差异。"
+                )
+            else:
+                st.caption(
+                    f"本机未检测到 `abaqus` 命令，无法对当前铺层做现场复核；"
+                    f"上面的参考值来自随包算例 {ref['odb']}"
+                    f"（参考铺层 {pretty_layup(cmp_ab['ref_layup'])}，"
+                    f"{ref['n_plies']} 层，一阶特征值 {ref['eigen']:.4f}）。"
+                    "装上 Abaqus 后本表会改为对当前铺层现场求解，"
+                    "并给出同模型下的数值差异。"
+                )
+
+        st.divider()
+        st.markdown("#### 本机 Abaqus 复核当前方案")
+        _afe_cmd = _abaqus_cmd()
+        if _afe_cmd is None:
+            st.caption(
+                "未检测到 `abaqus` 命令。装好 Abaqus 后把 Commands 目录加入 PATH，"
+                "或设置环境变量 `ABAQUS_CMD`，此处会出现「运行复核」按钮。"
+            )
+        else:
+            st.caption(
+                f"按当前铺层（{res['n_plies']} 层）与当前载荷"
+                f"（Nx = {nx_cur:.0f}、Ny = {ny_cur:.0f} N/m）生成 .inp，"
+                "调用本机 Abaqus 做线性摄动屈曲，再与该 Ritz 解比较。"
+                "单算例约 6–10 s，只在点击时运行。"
+            )
+            _fe_key = (
+                tuple(round(float(t), 3) for t in res["theta4"]),
+                int(res["n_plies"]),
+                round(float(nx_cur), 3), round(float(ny_cur), 3),
+            )
+            _fe_store = st.session_state.setdefault("_fe_result", {})
+            _fe_done = False
+            _btn = st.button("运行 Abaqus 复核（本机 FE）", key="run_fe_btn",
+                             width="stretch")
+            if _btn:
+                _t0 = time.time()
+                with st.status("正在调用本机 Abaqus 求解…", expanded=True) as _fst:
+                    try:
+                        _inp = afe.build_inp(res["theta4"], res["n_plies"],
+                                             nx_cur, ny_cur)
+                        _eigen, _wd = afe.run_inp(_afe_cmd, _inp, keep_dir=True)
+                        _fe_ncr = _eigen * afe.EDNOR_N_PER_MM
+                        # 老进程里 abaqus_fe 可能是修改前的版本（模块不会被 Streamlit 热重载），
+                        # 取不到 extract_mode 时降级为"未解析"，不要让整次复核失败
+                        _extract = getattr(afe, "extract_mode", None)
+                        _mode_fe = None
+                        try:
+                            if _extract is not None:
+                                _mode_fe = _extract(
+                                    _afe_cmd, Path(_wd) / "verify.odb",
+                                    A_PLATE * 1000.0, B_PLATE * 1000.0)
+                        finally:
+                            shutil.rmtree(_wd, ignore_errors=True)
+                        _rec = {
+                            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "theta4": [float(t) for t in res["theta4"]],
+                            "n_plies": int(res["n_plies"]),
+                            "nx": float(nx_cur), "ny": float(ny_cur),
+                            "ncr_ritz": round(float(ncr_ritz), 6),
+                            "ncr_fe": round(_fe_ncr, 6),
+                            "delta_pct": round((ncr_ritz - _fe_ncr) / _fe_ncr * 100.0, 6),
+                            "eigen": _eigen,
+                            "mode": _mode_fe,
+                            "abaqus": _afe_cmd,
+                            "from_page": True,
+                        }
+                        _fe_store[_fe_key] = {
+                            "eigen": _eigen, "ncr_fe": _fe_ncr,
+                            "delta": _rec["delta_pct"], "mode": _mode_fe,
+                            "elapsed": time.time() - _t0, "time": _rec["time"],
+                        }
+                        _append_fe_run(_rec)
+                        _fst.update(label="Abaqus 复核完成", state="complete",
+                                    expanded=False)
+                        _fe_done = True
+                    except Exception as _exc:  # noqa: BLE001
+                        _fe_store[_fe_key] = {
+                            "error": f"{type(_exc).__name__}: {_exc}",
+                        }
+                        _fst.update(label="Abaqus 复核失败", state="error")
+            if _fe_done:
+                # 结果已写入 data/abaqus_runs.json，就地重画上表，不触发整页重跑
+                _fe_new = _fe_run_for(res, nx_cur, ny_cur)
+                with _tbl_slot.container():
+                    _emit_cross_table(_fe_new)
+            _got = _fe_store.get(_fe_key)
+            if _got and "error" in _got:
+                st.error("Abaqus 复核未完成：" + _got["error"])
+                st.caption("这是本机有限元调用失败（建模、许可或路径问题），"
+                           "不影响上表的 Ritz 解。")
+
+        img_name = ABAQUS_IMAGES.get((int(round(nx_cur)), int(round(ny_cur))))
+        if img_name is not None:
+            img_path = _figure_path(img_name)
+            if img_path is not None:
+                st.image(
+                    str(img_path),
+                    caption=f"离线算例 {ref['odb']}：一阶屈曲模态"
+                            f"（Nx = {int(round(nx_cur))} / "
+                            f"Ny = {int(round(ny_cur))} N/m，"
+                            "U 云图，变形放大系数 50）",
+                    width=760,
+                )
+            else:
+                st.caption(f"未找到 figures/{img_name}，请确认图片随项目一起部署。")
+
+# 页脚说明
+st.divider()
+_foot_l, _foot_r = st.columns([3, 1], gap="small")
+with _foot_l:
+    st.caption("完成一个工况后可直接开始新的设计；当前结果不会保存到文件。")
+with _foot_r:
+    if st.button("开始新的设计", key="restart_bottom", width="stretch"):
+        _restart()
+
+with st.expander("方法与说明"):
+    st.markdown(
+        f"""
+**物理模型**　经典层合板理论（CLT）求 D 矩阵，双正弦级数 Rayleigh–Ritz 求屈曲载荷；
+四边简支（SS1），板长宽 a = b = {A_PLATE:.2f} m，保留 D16 / D26 弯扭耦合。
+临界倍数 λ 满足 λ·(Nx, Ny) 恰好使板屈曲，取 Ncr = λ·max(Nx, Ny)。
+
+**优化流程**（与 `Auto_Design.py` 一致）
+1. Ncr 目标值 = max(Nx, Ny)·SF，扫描 N = 4…20 的纯 [0]N 铺层求最小可行层数
+   （双向受压时取偶数层做对称铺层）；
+2. 双向受压时固定层数，用 pymoo NSGA-II（种群 80，迭代 60 代）搜索 [θ1/θ2/θ3/θ4]s
+   （目标含均衡性罚分），再用 SLSQP + Nelder–Mead 局部精修；
+   单向受压时纯 0° 已是最优，不再搜索；
+3. 用 Tsai-Hill 准则按设计载荷（工作载荷 × SF）做面内强度校核，FI < 1 才通过。
+
+**快速模式**　仅把 GA 规模降为 40×30、精修级数降为 M = 10；最终 Ncr 统一用 M = 16
+重新校核。取消勾选即与 `Auto_Design.py` 完全一致（约 1 分钟）。
+
+**缓存**　结果按 (Nx, Ny, SF, 快速模式, 运行模式) 缓存，调整图表选项或重复点击不会重算。
+
+**适用边界**
+
+{_assumptions_text()}
+"""
+    )
