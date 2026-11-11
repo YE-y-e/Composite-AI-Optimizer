@@ -1,0 +1,32 @@
+{
+  "data_file": "augmented_training_data.csv",
+  "n_samples": 602,
+  "n_train": 481,
+  "n_test": 121,
+  "random_state": 42,
+  "targets": {
+    "Ex": {
+      "model_file": "model_Ex.pkl",
+      "feature_kind": "sumdiff",
+      "feature_names": [
+        "θ1",
+        "θ2",
+        "θ1+θ2",
+        "|θ1-θ2|"
+      ],
+      "test_r2": 0.9968409081376955,
+      "test_mse": 6.0799949601618435
+    },
+    "D11": {
+      "model_file": "model_D11.pkl",
+      "feature_kind": "sum",
+      "feature_names": [
+        "θ1",
+        "θ2",
+        "θ1+θ2"
+      ],
+      "test_r2": 0.9993524278719325,
+      "test_mse": 0.00026868618729831533
+    }
+  }
+}

@@ -1,0 +1,564 @@
+[
+ {
+  "time": "2026-11-07T00:06:29",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -90.0
+  ],
+  "n_plies": 10,
+  "nx": 500.0,
+  "ny": 500.0,
+  "ncr_ritz": 1205.372,
+  "ncr_fe": 1198.6,
+  "delta_pct": 0.565,
+  "eigen": 1.1986,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT"
+ },
+ {
+  "time": "2026-11-07T00:06:36",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   0.0
+  ],
+  "n_plies": 10,
+  "nx": 1000.0,
+  "ny": 200.0,
+  "ncr_ritz": 2008.954,
+  "ncr_fe": 1997.7,
+  "delta_pct": 0.563,
+  "eigen": 1.9977,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT"
+ },
+ {
+  "time": "2026-11-07T00:06:43",
+  "theta4": [
+   45.08,
+   -45.08,
+   -0.0,
+   90.0
+  ],
+  "n_plies": 14,
+  "nx": 1500.0,
+  "ny": 800.0,
+  "ncr_ritz": 3864.325,
+  "ncr_fe": 3834.2,
+  "delta_pct": 0.786,
+  "eigen": 3.8342,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "odb": "abaqus/Job_4_Solar14.odb",
+  "inp": "abaqus/Job_4_Solar14.inp",
+  "status": "superseded",
+  "note": "旧算例（对应 3864.3 铺层）；现行 14 层方案见 ncr_fe=4054.1 那条"
+ },
+ {
+  "time": "2026-11-07T00:16:36",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 800.0,
+  "ny": 600.0,
+  "ncr_ritz": 1346.956,
+  "ncr_fe": 1347.1,
+  "delta_pct": -0.011,
+  "eigen": 1.3471,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T00:19:01",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 800.0,
+  "ny": 600.0,
+  "ncr_ritz": 1346.956,
+  "ncr_fe": 1347.1,
+  "delta_pct": -0.011,
+  "eigen": 1.3471,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T00:20:51",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -45.0
+  ],
+  "n_plies": 12,
+  "nx": 800.0,
+  "ny": 600.0,
+  "ncr_ritz": 2432.682,
+  "ncr_fe": 2413.5,
+  "delta_pct": 0.795,
+  "eigen": 2.4135,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T00:28:30",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -45.0
+  ],
+  "n_plies": 12,
+  "nx": 800.0,
+  "ny": 600.0,
+  "ncr_ritz": 2432.682,
+  "ncr_fe": 2413.5,
+  "delta_pct": 0.795,
+  "eigen": 2.4135,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T00:31:06",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -45.0
+  ],
+  "n_plies": 12,
+  "nx": 640.0,
+  "ny": 710.0,
+  "ncr_ritz": 2238.968,
+  "ncr_fe": 2221.3,
+  "delta_pct": 0.795,
+  "eigen": 2.2213,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T09:54:14",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -45.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 2128.596,
+  "ncr_fe": 2111.8,
+  "delta_pct": 0.795,
+  "eigen": 2.1118,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:08:41",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 1077.565,
+  "ncr_fe": 1077.6,
+  "delta_pct": -0.003,
+  "eigen": 1.0776,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:11:11",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 1077.565,
+  "ncr_fe": 1077.6,
+  "delta_pct": -0.003,
+  "eigen": 1.0776,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:12:08",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 1077.565,
+  "ncr_fe": 1077.6,
+  "delta_pct": -0.003,
+  "eigen": 1.0776,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:13:43",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 1077.565,
+  "ncr_fe": 1077.6,
+  "delta_pct": -0.003,
+  "eigen": 1.0776,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:14:23",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 1077.565,
+  "ncr_fe": 1077.6,
+  "delta_pct": -0.003,
+  "eigen": 1.0776,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:14:42",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 1077.565,
+  "ncr_fe": 1077.6,
+  "delta_pct": -0.003,
+  "eigen": 1.0776,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:16:41",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 12,
+  "nx": 680.0,
+  "ny": 680.0,
+  "ncr_ritz": 1077.565,
+  "ncr_fe": 1077.6,
+  "delta_pct": -0.003,
+  "eigen": 1.0776,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T10:40:01",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -45.0
+  ],
+  "n_plies": 12,
+  "nx": 820.0,
+  "ny": 630.0,
+  "ncr_ritz": 2407.516,
+  "ncr_fe": 2388.6,
+  "delta_pct": 0.792,
+  "eigen": 2.3886,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T11:00:33",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   0.0
+  ],
+  "n_plies": 10,
+  "nx": 700.0,
+  "ny": 500.0,
+  "ncr_ritz": 1406.267,
+  "ncr_fe": 1398.4,
+  "delta_pct": 0.563,
+  "eigen": 1.3984,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T11:22:14",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -90.0
+  ],
+  "n_plies": 10,
+  "nx": 500.0,
+  "ny": 810.0,
+  "ncr_ritz": 1490.613,
+  "ncr_fe": 1482.3,
+  "delta_pct": 0.561,
+  "eigen": 1.4823,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T11:29:55",
+  "theta4": [
+   45.08,
+   -45.08,
+   -0.0,
+   90.0
+  ],
+  "n_plies": 14,
+  "nx": 1500.0,
+  "ny": 800.0,
+  "ncr_ritz": 3864.325,
+  "ncr_fe": 3834.2,
+  "delta_pct": 0.786,
+  "eigen": 3.8342,
+  "mode": {
+   "m": 1,
+   "n": 1,
+   "corr": 0.9997574971672913
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true,
+  "odb": "abaqus/Job_4_Solar14.odb",
+  "inp": "abaqus/Job_4_Solar14.inp",
+  "status": "superseded",
+  "note": "旧算例（对应 3864.3 铺层）；现行 14 层方案见 ncr_fe=4054.1 那条"
+ },
+ {
+  "time": "2026-11-07T11:32:31",
+  "theta4": [
+   45.08,
+   -45.08,
+   -0.0,
+   90.0
+  ],
+  "n_plies": 14,
+  "nx": 1500.0,
+  "ny": 800.0,
+  "ncr_ritz": 3864.325,
+  "ncr_fe": 3834.2,
+  "delta_pct": 0.786,
+  "eigen": 3.8342,
+  "mode": {
+   "m": 1,
+   "n": 1,
+   "corr": 0.9997574971672913
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true,
+  "odb": "abaqus/Job_4_Solar14.odb",
+  "inp": "abaqus/Job_4_Solar14.inp",
+  "status": "superseded",
+  "note": "旧算例（对应 3864.3 铺层）；现行 14 层方案见 ncr_fe=4054.1 那条"
+ },
+ {
+  "time": "2026-11-07T11:35:23",
+  "theta4": [
+   45.08,
+   -45.08,
+   -0.0,
+   90.0
+  ],
+  "n_plies": 14,
+  "nx": 1500.0,
+  "ny": 800.0,
+  "ncr_ritz": 3864.325,
+  "ncr_fe": 3834.2,
+  "delta_pct": 0.786,
+  "eigen": 3.8342,
+  "mode": null,
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true,
+  "odb": "abaqus/Job_4_Solar14.odb",
+  "inp": "abaqus/Job_4_Solar14.inp",
+  "status": "superseded",
+  "note": "旧算例（对应 3864.3 铺层）；现行 14 层方案见 ncr_fe=4054.1 那条"
+ },
+ {
+  "time": "2026-11-07T11:40:55",
+  "theta4": [
+   0.0,
+   0.0,
+   0.0,
+   0.0
+  ],
+  "n_plies": 14,
+  "nx": 500.0,
+  "ny": 790.0,
+  "ncr_ritz": 1846.715,
+  "ncr_fe": 1846.0,
+  "delta_pct": 0.039,
+  "eigen": 1.846,
+  "mode": {
+   "m": 1,
+   "n": 2,
+   "corr": 0.9999999675423104
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-07T11:42:51",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -45.0
+  ],
+  "n_plies": 12,
+  "nx": 950.0,
+  "ny": 500.0,
+  "ncr_ritz": 2789.195,
+  "ncr_fe": 2767.2,
+  "delta_pct": 0.795,
+  "eigen": 2.7672,
+  "mode": {
+   "m": 1,
+   "n": 1,
+   "corr": 0.9999327856692874
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-08T10:20:00",
+  "theta4": [
+   48.55062434136059,
+   -38.593852275116745,
+   -74.76493019950806,
+   50.77882904443243
+  ],
+  "n_plies": 14,
+  "nx": 1500.0,
+  "ny": 800.0,
+  "ncr_ritz": 4091.9,
+  "ncr_fe": 4054.1,
+  "delta_pct": 0.932,
+  "eigen": 4.0541,
+  "mode": {
+   "m": 1,
+   "n": 1,
+   "corr": 0.9997230704809738
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": false,
+  "elapsed": 6.0,
+  "note": "完整模式主推荐（14 层），脚本复核",
+  "odb": "abaqus/Job_4_Solar14.odb",
+  "inp": "abaqus/Job_4_Solar14.inp"
+ },
+ {
+  "time": "2026-11-08T17:58:25",
+  "theta4": [
+   45.012029074448236,
+   -45.338016046391836,
+   -0.16398066573441872,
+   89.67601640167587
+  ],
+  "n_plies": 14,
+  "nx": 1090.0,
+  "ny": 1380.0,
+  "ncr_ritz": 3310.377,
+  "ncr_fe": 3284.7,
+  "delta_pct": 0.782,
+  "eigen": 3.2847,
+  "mode": {
+   "m": 1,
+   "n": 1,
+   "corr": 0.9997578258407716
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-09T15:07:26",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   -45.0
+  ],
+  "n_plies": 12,
+  "nx": 1130.0,
+  "ny": 1000.0,
+  "ncr_ritz": 2258.511,
+  "ncr_fe": 2240.7,
+  "delta_pct": 0.795,
+  "eigen": 2.2407,
+  "mode": {
+   "m": 1,
+   "n": 1,
+   "corr": 0.9999327992800666
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ },
+ {
+  "time": "2026-11-09T21:42:27",
+  "theta4": [
+   -45.0,
+   45.0,
+   45.0,
+   0.0
+  ],
+  "n_plies": 10,
+  "nx": 590.0,
+  "ny": 500.0,
+  "ncr_ritz": 1304.898,
+  "ncr_fe": 1297.6,
+  "delta_pct": 0.562,
+  "eigen": 1.2976,
+  "mode": {
+   "m": 1,
+   "n": 1,
+   "corr": 0.9999766284128642
+  },
+  "abaqus": "D:\\SIMULIA\\Commands\\abaqus.BAT",
+  "from_page": true
+ }
+]
