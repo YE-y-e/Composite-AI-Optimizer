@@ -15,17 +15,37 @@
 
 ---
 
+## 快速开始（Windows 双击即用）
+
+1. 确认已安装 **Python 3.10 或更高版本**（[下载](https://www.python.org/downloads/)，安装时勾选 *Add python.exe to PATH*）；
+2. 双击 **`启动.bat`**：首次运行会在本目录创建 `.venv` 并安装依赖（约 1–3 分钟，需联网），装好后自动启动服务并打开浏览器；
+3. 关闭那个黑窗口（或按 Ctrl+C）即停止服务；若窗口被误关，双击 **`停止.bat`** 清理残留进程。
+
+- 默认地址 `http://127.0.0.1:8501`，端口被占用会自动顺延，实际地址打印在窗口里；
+- 运行日志写入 `启动日志.txt`（每次启动覆盖）；
+- 不想装环境：直接使用线上地址 <https://composite-ai-optimizer-n8xhfwdwppjxexsqdyfenw.streamlit.app/>；
+- 手动方式（等价）：`python -m pip install -r requirements.txt` → `python -m streamlit run codes/app.py`；
+- macOS / Linux：`python3 launcher.py`（脚本会自动创建 `.venv` 并打开浏览器）。
+
+> 启动器只使用本包内的 `.venv`，不会改动系统 Python；依赖清单为纯 ASCII 注释，兼容中文 Windows 的 GBK 环境。
+
+---
+
 ## 1. 目录结构
 
 ```
 Final_Submission/
-├── README.md                      # 本文件：环境依赖与运行顺序
-├── requirements.txt               # 环境依赖清单（另有 codes/ 下同名副本）
-├── 技术报告.md                     # 技术报告（含 5 张编号插图）
-├── 过程日志.md                     # 完整排查过程记录（含踩坑与修复、ABAQUS 验证）
-├── 过程留痕.md                     # 比赛佐证：按时间线的阶段记录（含工程化、产品化与 ABAQUS 验证阶段）
-├── 实验结论_双向受压屈曲.md          # 双向受压专题结论（厚度定生死，角度定上限）
+├── 启动.bat                       # Windows 双击即用：建环境 → 装依赖 → 起服务 → 开浏览器
+├── 停止.bat                       # 停止本地服务（清理残留进程）
+├── launcher.py                    # 启动器：解释器探测、依赖检查、端口选择、健康检查、自动跳转
+├── README.md                      # 本文件：快速开始、环境、运行顺序与结论
+├── LICENSE                        # MIT
+├── requirements.txt               # 依赖清单（ASCII 注释）
+├── SHA256SUMS.txt                 # 全包校验和（sha256）
 ├── codes/                         # 全部源码
+│   ├── app.py                     # Streamlit Web 平台（三步向导 → 铺层/3D 波形/性能与参考对比）
+│   ├── angle_optimize.py          # CLT + Rayleigh–Ritz 屈曲求解（D 矩阵、临界载荷、模态）
+│   ├── Auto_Design.py             # 层数扫描 + 角度寻优 + 屈曲/强度校核
 │   ├── test_clt.py                # ① 环境验证：单点 ABD 矩阵与工程常数
 │   ├── generate_data.py           # ② LHS 采样生成数据集
 │   ├── plot_data.py               # ③ 刚度云图（理论曲面 + 采样点）
@@ -33,11 +53,9 @@ Final_Submission/
 │   ├── train_model.py             # ⑤ 训练随机森林代理模型
 │   ├── optimize.py                # ⑥ NSGA-II 双目标优化
 │   ├── structural_optimize.py     # ⑦ 单向受压屈曲约束下的最小重量设计
-│   ├── angle_optimize.py          # ⑧ 双向受压铺层角度优化（GA + Ritz 屈曲）
 │   ├── plot_ncr_compare.py        # ⑨ 8 层 / 12 层屈曲载荷对比图
-│   ├── Auto_Design.py             # ⑩ 一键式设计工具（Nx/Ny/SF → 方案 + 屈曲/强度双重校核）
-│   ├── app.py                     # ⑪ Streamlit Web 平台（三步向导 → 铺层/3D 波形/性能与参考对比）
-│   └── requirements.txt           # 环境依赖清单
+│   ├── requirements.txt           # 依赖清单（与根目录同名文件一致）
+│   └── .streamlit/config.toml     # 主题（主色、背景色）
 ├── data/                          # 全部数据产物
 │   ├── training_data.csv          # 500 组 LHS 样本
 │   ├── augmented_training_data.csv# 602 组（500 LHS + 100 边界 + 2 极值）
@@ -46,28 +64,44 @@ Final_Submission/
 │   ├── model_Ex.pkl               # Ex 代理模型权重（随机森林，500 棵树）
 │   ├── model_D11.pkl              # D11 代理模型权重（随机森林，500 棵树）
 │   └── model_metadata.json        # 训练元数据（划分/种子/特征/R²/MSE）
-├── abaqus/                        # 离线验证算例（ABAQUS 模型源文件与结果库）
+├── abaqus/                        # 离线参考算例（模型源文件与结果库）
 │   ├── Job_1_Drone.inp / .odb     # 500/500 N/m，一阶特征值 2.1118
 │   ├── Job_2_Battery.inp / .odb   # 1000/200 N/m，一阶特征值 1.9976
 │   ├── Job_3_Solar.inp / .odb     # 1500/800 N/m，一阶特征值 6.5138
 │   └── README_abaqus.md           # 算例说明（版本、单位制、对应关系、复现步骤）
-└── figures/                       # 全部图件
-    ├── data_distribution.png      # Ex / D11 随角度变化云图
-    ├── pareto_front.png           # v1 帕累托前沿（退化为单点）
-    ├── pareto_front_v2.png        # v2 帕累托前沿（重量 vs D11）
-    ├── ncr_comparison.png         # 双向受压：纯 [0]8 vs 角度优化（含 12 层参考）
-    ├── angle_modes.png            # 屈曲载荷柱状对比 + 两种铺层的屈曲模态
-    ├── angle_polar.png            # 最优铺层 4 个角度的极坐标分布
-    ├── structural_optimization.png# 单向受压：Ncr(N) 曲线与最优层数 N*=9
-    ├── app_preview.png            # Streamlit 平台界面（推荐铺层 / 3D 波形 / 性能与参考对比）
-    └── abaqus_mode.png            # ABAQUS 一阶屈曲模态（S4R，特征值 0.60634）
+├── figures/                       # 全部图件
+│   ├── logo_mark.png / logo_mark_512.png / logo_128.png   # 标识（README / PDF / 网页）
+│   ├── mode_m1_uav.png 等 4 张    # 首页场景卡示意图
+│   ├── abaqus_drone.png 等 3 张   # ABAQUS 一阶模态云图（对应三条预设）
+│   ├── data_distribution.png      # Ex / D11 随角度变化云图
+│   ├── pareto_front.png           # v1 帕累托前沿（退化为单点）
+│   ├── pareto_front_v2.png        # v2 帕累托前沿（重量 vs D11）
+│   ├── ncr_comparison.png         # 双向受压：纯 [0]8 vs 角度优化（含 12 层参考）
+│   ├── angle_modes.png            # 屈曲载荷柱状对比 + 两种铺层的屈曲模态
+│   ├── angle_polar.png            # 最优铺层 4 个角度的极坐标分布
+│   ├── structural_optimization.png# 单向受压：Ncr(N) 曲线与最优层数 N*=9
+│   ├── app_preview.png            # 平台界面
+│   └── abaqus_mode.png            # 早期单算例的 ABAQUS 一阶模态（特征值 0.60634）
+├── tests/                         # pytest 用例（57 项）
+│   ├── conftest.py                # 公共 fixture（APP_MODE=demo）
+│   ├── apptest_helpers.py         # AppTest 辅助函数
+│   ├── test_p0_closure.py         # 不可行分支与校核判定
+│   ├── test_p1_inputs.py          # 输入控件与状态保持
+│   ├── test_p2_ui.py              # 结果页结构与去重
+│   ├── test_mode_switch.py        # demo / local 双模式
+│   └── test_review_round.py       # 来源标注、PDF、设计记录导出等
+└── docs/                          # 文档
+    ├── 技术报告.md                 # 技术报告（含编号插图）
+    ├── 实验结论_双向受压屈曲.md      # 双向受压专题结论（厚度定生死，角度定上限）
+    ├── 过程留痕.md                 # 比赛佐证：按时间线的阶段记录
+    └── 过程日志.md                 # 完整排查过程记录（含踩坑与修复、ABAQUS 对照）
 ```
 
 > **关于 `abaqus/` 目录**：内含三条离线验证算例的完整 ABAQUS 模型源文件（`.inp`）、结果数据库（`.odb`）与说明文档 `README_abaqus.md`（软件版本、单位制、算例对应关系、一阶特征值与复现步骤）。评审专家可导入 `.inp` 重建模型、重现全部特征值，或直接读取 `.odb` 核对结果；未附 `.cae`，CAE 模型可由 `.inp` 重建。
 
 ### 技术报告说明
 
-`技术报告.md` 为完整学术报告，含封面（作品名称、参赛团队编号）、约 300 字中文摘要与关键词，
+`docs/技术报告.md` 为完整学术报告，含封面（作品名称、参赛团队编号）、约 300 字中文摘要与关键词，
 正文按「背景与意义 / 理论方法与算法 / 结果与分析 / 验证与可靠性 / 结论与展望」组织；
 第三章保留 3.1–3.6（3.6 为 Web 平台），第四章为验证章节（含 ABAQUS 交叉验证），
 文末按 GB/T 7714 列出 6 篇参考文献并在正文上标引用。正文用标准 Markdown 图片语法引入
@@ -197,7 +231,7 @@ python codes\Auto_Design.py 500 500 1.5
 > 它还会主动提示"层数定得偏保守"：若允许以角度优化替代纯 0° 基准来定层数，
 > `N = 10` 层（1.25 mm）即可满足（`Ncr ≈ 1230 N/m`），可再省 2 层。
 
-> **步骤 ⑪ 是什么**：`app.py` 是基于 Streamlit + Plotly 的**交互式生成式设计平台**，
+> **步骤 ⑪ 是什么**：`app.py` 是基于 Streamlit + Plotly 的**交互式参数化设计平台**，
 > 带工程场景预设、铺层图形化与专业化 UI。
 > 左侧滑块输入 `Nx`（0–2000）、`Ny`（0–2000）、`SF`（1.0–2.0），点击「开始优化」后，
 > 右侧三列同步给出：
@@ -219,8 +253,9 @@ python codes\Auto_Design.py 500 500 1.5
 > 启动后浏览器访问 `http://localhost:8501`。
 >
 > 预设工况（`Nx = Ny = 500 N/m`、`SF = 1.5`，演示模式读取离线结果）：12 层
-> `[-44.9/44.9/45.2/-45.2/-44.9/44.9]s`，`Ncr = 2128.6 N/m`（`λ = 4.26`），
-> 较同层数纯 0° 的 1077.6 N/m **提升 97.5%**，Tsai-Hill `FI = 3.16×10⁻⁶`，屈曲 + 强度双重校核通过；
+> `[-45.0/45.0/45.0/-90.0/-45.0]s`，`Ncr = 1205.4 N/m`（`λ = 2.41`，`λ/SF = 1.61`），
+> 较同层数纯 0° 的 623.6 N/m **提升 93%**，Tsai-Hill `FI = 8.75×10⁻⁶`，屈曲 + 强度双重校核通过；
+> 12 层 `[-45/45/45/-45/-45/45]s`（2128.8 N/m）作为工程裕度备选；
 > 本地完整计算（`APP_MODE=local` 或勾选「在本次会话运行完整优化」）得到同一解。
 >
 > **运行模式**：由环境变量 `APP_MODE` 明确指定，不再按操作系统猜测。
@@ -250,14 +285,14 @@ python codes\Auto_Design.py 500 500 1.5
 > 一阶特征值 `0.60634` → 606.3 N/m，与 Python 理论值 624.7 N/m 的数值差异 **2.94%**，
 > 模态为 `m = n = 1` 的中心单波。**这是 v1 的单个 8 层算例，与下面三条预设不是同一模型**；
 > 该早期算例为手工建模、未随包提供 `.cae`；三条预设算例的 `.inp` 与 `.odb` 已随包提供于
-> `abaqus/` 目录（见 `README_abaqus.md`），早期算例的建模步骤见 `过程日志.md` 第 11 章。
+> `abaqus/` 目录（见 `README_abaqus.md`），早期算例的建模步骤见 `docs/过程日志.md` 第 11 章。
 >
 > 应用内另有三组离线参考算例（`figures/abaqus_drone.png`、`abaqus_battery.png`、
 > `abaqus_solar.png`，ODB 为 `Job_1_Drone` / `Job_2_Battery` / `Job_3_Solar`）：
 >
 > | 工况 (Nx / Ny) | 参考铺层 | 层数 | 一阶特征值 | 换算 Ncr | Ritz 解 | 偏差 |
 > |---|---|---|---|---|---|---|
-> | 500 / 500 N/m | `[-44.9/44.9/45.2/-45.2]s` | 12 | 2.1118 | 2111.8 N/m | 2128.6 N/m | +0.80% |
+> | 500 / 500 N/m | `[-44.9/44.9/45.2/-45.2]s` | 12 | 2.1118 | 2111.8 N/m | 2128.6 N/m | +0.79% |
 > | 1000 / 200 N/m | `[44.96/-45.28/-44.64/-90.0]s` | 10 | 1.9976 | 1997.6 N/m | 2008.9 N/m | +0.57% |
 > | 1500 / 800 N/m | `[-45/45/45/-45]s` | 16 | 6.5138 | 6513.8 N/m | 6591.7 N/m | +1.20% |
 >
@@ -360,9 +395,9 @@ python codes\Auto_Design.py 500 500 1.5
 - **理论上限**：由 `Q̄11 + Q̄22 + 2Q̄12` 的旋转不变性与 `Q̄66 ≤ 46.59 GPa`，可证任意 8 层
   （1.0 mm）铺层 **`Ncr ≤ 632.2 N/m < 1000 N/m`** —— **角度只能决定"逼近上限多少"，
   厚度决定"能不能行"**。
-- **工程解**：10 层（1.25 mm）时，纯 `[0]10` 仅 623.6 N/m（差 38%），而均衡 ±45 达
-  **1230 N/m**（裕度 23%），使达标厚度由 12 层降到 10 层、**减重 17%**；
-  故正确路线是"**增厚 + 均衡角度设计**"的组合。
+- **工程解**：逐层数优化后，10 层（1.25 mm）的 `[-45/45/45/-90/-45]s` 达 **1205.4 N/m**
+  （`λ/SF = 1.61 ≥ 1.2`），成为主推荐；12 层 2128.8 N/m 作为裕度备选，较旧流程**减重 16.7%**；
+  故正确路线是"**增厚 + 均衡角度设计 + 逐层数择优**"的组合。
 - **双重校核**：`Auto_Design.py` 在屈曲之外内置 **Tsai-Hill 面内强度校核**（T300/5208 典型许用值），
   `FI < 1` 打印"【安全】屈曲与强度双重校核通过"，否则提示"必须增加厚度"。
 - **商用有限元复核（早期单算例）**：将 `[45/-45/-45/45]s`（8 层、1.0 mm）导入 ABAQUS
@@ -373,7 +408,7 @@ python codes\Auto_Design.py 500 500 1.5
   同一个模型；应用内的对照口径见 §3「关于 ABAQUS 参考算例」——**载荷相同不等于模型相同**，
   且该早期算例未随包提供 `.cae`，只能算"条件性参考对比"，不构成验证结论。
 
-> 专题细节见 `实验结论_双向受压屈曲.md`，代码见 `codes/angle_optimize.py`。
+> 专题细节见 `docs/实验结论_双向受压屈曲.md`，代码见 `codes/angle_optimize.py`。
 >
 > **一键调用**：以上结论已封装为 `codes/Auto_Design.py`，输入工况即可输出推荐铺层——
 > `python codes\Auto_Design.py 500 500 1.5` → 12 层
@@ -385,6 +420,8 @@ python codes\Auto_Design.py 500 500 1.5
 > （详见 §3 步骤 ⑪）。
 
 ---
+
+> **同预算对照**（见 `figures/budget_quality.png`）：同一工况下连续角随机采样（24,000 次与 3,000 组 LHS 两次独立实验）中，满足对称 + 均衡约束的候选 **0 组**；离散完全枚举 626 次评价达 **1205.4 N/m**（5 档工艺网格内的最优），GA 1,200 次评价达 1152 N/m。把工艺约束编码进搜索，是这套方法区别于随机试凑的关键；也正因为穷举在 4 变量离散域更划算，下一步对小层数改用离散枚举、GA 负责大层数与连续精修。
 
 ## 5. 验证措施
 
@@ -403,7 +440,30 @@ python codes\Auto_Design.py 500 500 1.5
   这只是**单个模型**的数值对照：层数、厚度、载荷都与 Web 应用里的三条预设案例不同，
   不构成对应用输出结果的验证结论；应用内的对照口径见第 3 章「关于 ABAQUS 参考算例」说明。
 
-### 5.1 自动化测试（`codes/app.py`）
+### 有限元复核（可选，需本机装 Abaqus）
+
+**网页内**：结果页第三页有「运行 Abaqus 复核（本机 FE）」按钮，取当前铺层与当前载荷
+（`Nx`、`Ny` 可任意，不必是预设）生成 `.inp`、调用本机 Abaqus 求解，并就地给出特征值、
+FE 的 `Ncr`、与当前 Ritz 解的差异和用时（单算例 6–10 s，只在点击时运行）。
+未检测到 `abaqus` 命令时该按钮不出现，只显示一行提示，不影响其他功能。
+
+**命令行**：`python scripts/abaqus_verify.py --preset "500|500|1.5"` 或
+`python scripts/abaqus_verify.py --theta4=-45,45,45,-45 --plies 12 --nx 800 --ny 600`。
+两条路径共用 `codes/abaqus_fe.py`，结果追加写入 `data/abaqus_runs.json`。
+
+
+包里 `abaqus/` 是三条参考算例的模型源文件与结果库；如果想复核**当前设计**（而不只是参考算例），可以对模板 .inp 做程序化替换后求解：
+
+```bash
+python scripts/abaqus_verify.py --preset "500|500|1.5"      # 用预设主推荐
+python scripts/abaqus_verify.py --theta4=-45,45,45,-90 --plies 10 --nx 500 --ny 500
+```
+
+脚本以 `abaqus/Job_1_Drone.inp` 为模板（50×50 S4R、SS1、1 N/mm），替换铺层与载荷比，`abaqus job=… interactive` 求解后从 `.dat` 读一阶特征值，与 Ritz（M = 16）比较，并把记录追加到 `data/abaqus_runs.json`。检测不到 `abaqus` 命令时脚本以退出码 2 结束并明确提示"跳过"，不会伪装成已校验。
+
+实测（Abaqus 2024，单算例 6–9 s）：500/500 的 10 层方案 Ritz 1205.4 vs FE 1198.6（+0.56%）、1000/200 的 10 层 2009.0 vs 1997.7（+0.56%）、1500/800 的 14 层 4091.9 vs 4054.1（+0.93%）。界面第三页在命中同铺层记录时会多显示一行「ABAQUS 实算」。
+
+## 5.1 自动化测试（`codes/app.py`）
 
 `Final_Submission/tests/` 下的用例不依赖浏览器，可直接用 pytest 运行：
 
@@ -425,7 +485,7 @@ cd Final_Submission
 ## 6. 已知限制
 
 1. **随机森林无法外推**：预测值必落在训练样本的目标范围内，边界极值天然被低估。
-   本项目的应对是加入 102 个边界/极值样本（见 `过程日志.md` 第 4 节），
+   本项目的应对是加入 102 个边界/极值样本（见 `docs/过程日志.md` 第 4 节），
    但 `Ex` 的最大绝对误差仍达 19.99 GPa（RMSE 的 8 倍），主要来自峰值附近仍偏稀疏的采样。
 2. **v1 优化问题本身退化**：纯角度优化不存在折中解，这是问题的数学性质而非算法缺陷。
 3. **v2 中 `N` 为连续松弛**：NSGA-II 在 `N ∈ [4,24]` 上连续搜索，
@@ -440,7 +500,7 @@ cd Final_Submission
 6. **Web 平台是单页交互工具**：不做用户管理与设计历史持久化，结果按参数缓存在进程内，
    刷新页面后需重新点击计算；云端部署时需自行配置访问权限与自定义域名。
 7. **早期 v1 单算例的 ABAQUS 模型未随包提交**：该算例为手工建模，结果以截图
-   `figures/abaqus_mode.png` 与 2.94% 的数值差异记录，参数见 `过程日志.md` 第 11 章；
+   `figures/abaqus_mode.png` 与 2.94% 的数值差异记录，参数见 `docs/过程日志.md` 第 11 章；
    三条预设算例的 `.inp` 与 `.odb` 已随包提供于 `abaqus/`，可独立复现特征值。
 
 ---
