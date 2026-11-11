@@ -1,22 +1,25 @@
 # ============================================================
-#  AI 力学 · 复合材料层合板刚度预测与优化  环境依赖
-#  Python 3.13.2  (Windows / Linux / Streamlit Cloud 均可)
-#  虚拟环境创建：python -m venv .venv
-#  安装命令（清华镜像）：
-#     .\.venv\Scripts\python.exe -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
-#  说明：.venv\pip.ini 已把索引固定为清华镜像源
+#  QianCeng ZhiGou - Composite Laminate Buckling Optimizer
+#  Python 3.13.2  (Windows / Linux / Streamlit Cloud)
+#
+#  Create venv :  python -m venv .venv
+#  Install     :  .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+#  CN mirror   :  ... -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+#
+#  NOTE: keep this file ASCII-only -- pip on a GBK locale fails to
+#  decode non-ASCII comments here (UnicodeDecodeError: 'gbk' codec).
 # ============================================================
 
-# ---------------- 主要依赖 ----------------
-composipy==1.7.5        # 经典层合板理论（CLT）计算 ABD 矩阵
-pymoo==0.6.2            # 多目标优化 NSGA-II
-scikit-learn==1.9.1     # 随机森林代理模型
-matplotlib==3.11.2      # 绘图
-streamlit==1.66.0       # Web 交互界面（app.py）
-plotly==7.1.0           # 3D 屈曲波形 / 柱状对比图（app.py）
-fpdf2==2.8.9            # 设计方案报告 PDF 导出（app.py）
+# ---------------- direct dependencies ----------------
+composipy==1.7.5        # classical laminate theory (CLT), ABD matrices
+pymoo==0.6.2            # multi-objective optimization, NSGA-II
+scikit-learn==1.9.1     # random-forest surrogate model
+matplotlib==3.11.2      # plotting
+streamlit==1.66.0       # web UI (app.py)
+plotly==7.1.0           # 3D buckling mode / bar charts (app.py)
+fpdf2==2.8.9            # PDF design report (app.py)
 
-# ---------------- 上述库的传递依赖 ----------------
+# ---------------- transitive pins ----------------
 about-time==4.2.1
 alive-progress==3.3.0
 autograd==1.9.1
