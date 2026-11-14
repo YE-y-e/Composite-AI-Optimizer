@@ -144,9 +144,13 @@ CSS = """
     --ok: #10b981;
     --warn: #f59e0b;
     --danger: #ef4444;
-    /* 中文统一雅黑，英文与数字走系统无衬线；标题与正文同一字体体系 */
+    /* 中文优先雅黑；缺雅黑的机器按思源/黑体/宋体顺序回退，
+       避免落到 Linux 或精简系统自带的异体字库上出现"字形错位" */
     --sans: 'Microsoft YaHei', 'Microsoft YaHei UI', 'Segoe UI', Arial,
-            'Noto Sans SC', 'PingFang SC', system-ui, -apple-system, sans-serif;
+            'Noto Sans SC', 'Source Han Sans SC', 'Noto Sans CJK SC',
+            'PingFang SC', 'Hiragino Sans GB',
+            'SimHei', 'SimSun', 'Microsoft JhengHei', 'WenQuanYi Micro Hei',
+            system-ui, -apple-system, sans-serif;
     --heading: var(--sans);
     /* 等宽只留给铺层序列、矩阵符号这类技术记号 */
     --mono: 'Consolas', 'Cascadia Mono', 'Segoe UI Mono', monospace;
@@ -1188,6 +1192,7 @@ def verdict_of(res: dict) -> dict:
 # 计算层
 # 逐层数优化主流程（D1）：主推荐 = 最轻可行，备选 = 更大裕度
 PRESET_SCAN_FILE = "preset_scan.json"
+PRESET_SNAPSHOT_FILE = "preset_snapshot.json"
 
 
 def _data_path(name: str):
@@ -1223,6 +1228,37 @@ def _preset_scan_cached(path_str: str, stamp: float) -> dict:
         return json.loads(Path(path_str).read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _preset_snapshot() -> dict:
+    """离线算例的静态快照（模态网格 / 级数外推 / 纯 0° 扫描）。
+
+    云端 demo 只读它出图：页面上不再出现 ``ncr_mode`` / ``converged_ncr`` /
+    ``scan_pure_zero`` 的任何调用。与 ``_preset_scan`` 一样把路径与 mtime
+    当参数传给缓存——快照一重生成，缓存自然换新的。
+
+    读不出来时返回 ``{"_error": "..."}``（而不是空表），让上层既能回退到
+    现场计算，又能在页面上提示一次原因。
+    """
+    path = _data_path(PRESET_SNAPSHOT_FILE)
+    if path is None:
+        return {}
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    return _preset_snapshot_cached(str(path), stamp)
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _preset_snapshot_cached(path_str: str, stamp: float) -> dict:
+    try:
+        data = json.loads(Path(path_str).read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"_error": f"{type(exc).__name__}: {exc}"}
+    if not isinstance(data, dict):
+        return {"_error": "顶层不是对象"}
+    return data
 
 
 def _base_ncr_at(n_plies: int, nx: float, ny: float) -> float:
@@ -1287,6 +1323,85 @@ def _with_scan(res: dict, scan: list, backup: dict | None) -> dict:
     return res
 
 
+def _cand_from_snapshot(entry: dict, base_ncr: float, nx, ny, sf) -> dict:
+    """用离线表里的数值重建 ``_make_res`` 的字段（纯 numpy，无求解器）。
+
+    与 ``_make_res`` 的唯一差别是 λ / Ncr 直接取自离线表（同一套 M = 16 复核
+    口径），不再跑一次特征值求解；铺层、厚度、面密度、失效指数都由角度现算，
+    仍是纯 CLT，微秒级。键名与 ``_make_res`` 逐一对齐。
+    """
+    theta4 = [float(t) for t in entry["theta4"]]
+    n_plies = int(entry["n_plies"])
+    stack = ad.symmetric_stack(theta4, n_plies)
+    st = ad.strength_check(stack, nx, ny, sf)
+    rules = ad.check_rules(theta4, n_plies)
+    lam = float(entry["lam"])
+    ncr = float(entry["ncr"])
+    feasible = bool(lam >= ad.MIN_MARGIN * sf and st["fi"] < 1.0
+                    and rules["symmetric"] and rules["balanced"])
+    return {
+        "status": "ok",
+        "nx": float(nx), "ny": float(ny), "sf": float(sf),
+        "fast": True, "source": "preset",
+        "target": max(nx, ny) * sf, "biaxial": (nx > 0 and ny > 0),
+        "n_plies": n_plies, "ncr": ncr, "lam": lam,
+        "layup": ad.stacking_text(theta4, n_plies), "theta4": theta4,
+        "stack": [float(a) for a in stack],
+        "thickness": float(n_plies * T_PLY),
+        "areal": float(ad.areal_weight(n_plies)),
+        "fi": float(st["fi"]), "fi_ply": int(st["ply"]),
+        "fi_theta": float(st["theta"]),
+        "s16": rules["s16"], "s26": rules["s26"],
+        "rules": rules, "feasible": feasible,
+        "base_ncr": float(base_ncr),
+        "d_opt": ad.d_of_angles(stack).tolist(),
+        "d_zero": ad.d_of_angles([0.0] * n_plies).tolist(),
+        "min_margin": ad.MIN_MARGIN, "margin_factor": ad.MARGIN_FACTOR,
+    }
+
+
+def _preset_res_from_snapshot(table: dict, snap: dict, nx, ny, sf) -> dict:
+    """命中离线表且有快照时，直接拼出结果字典（零求解器调用）。"""
+    prim = table["primary"]
+    guard = snap.get("guard") or {}
+    if [int(prim["n_plies"]), float(prim["ncr"])] != list(guard.get("primary") or []):
+        raise ValueError("快照与离线表的 primary 对不上")
+    base = snap.get("base_ncr") or {}
+    if "primary" not in base:
+        raise KeyError("快照缺少 base_ncr.primary")
+    res = _cand_from_snapshot(prim, base["primary"], nx, ny, sf)
+
+    backup = None
+    if table.get("backup"):
+        b = table["backup"]
+        if [int(b["n_plies"]), float(b["ncr"])] != list(guard.get("backup") or []):
+            raise ValueError("快照与离线表的 backup 对不上")
+        if "backup" not in base:
+            raise KeyError("快照缺少 base_ncr.backup")
+        backup = _cand_from_snapshot(b, base["backup"], nx, ny, sf)
+
+    scan = [
+        {"n_plies": r["n_plies"], "areal": r["areal"], "lam": r["lam"],
+         "ncr": r["ncr"], "fi": r["fi"], "feasible": r["feasible"],
+         "layup": r["layup"], "theta4": r["theta4"]}
+        for r in table["rows"]
+    ]
+    _with_scan(res, scan, backup)
+    rows = snap.get("scan_pure0")
+    if not isinstance(rows, list) or not rows:
+        raise KeyError("快照缺少 scan_pure0")
+    res["rows"] = rows
+    res["snapshot"] = snap
+    _key = (int(round(nx)), int(round(ny)), round(sf, 2))
+    res["source_label"] = DEMO_PRESETS.get(_key, {}).get(
+        "label", table.get("case_id", ""))
+    res["isolated_preset"] = False
+    res["n_min"] = res["scan_min"]
+    res["evals"] = 0
+    res["ga_time"] = 0.0
+    return res
+
+
 @st.cache_data(show_spinner=False, max_entries=24)
 def auto_design(nx: int, ny: int, sf: float, fast: bool) -> dict:
     """主流程：逐层数优化角度，取最轻可行候选（λ ≥ MIN_MARGIN·SF）。
@@ -1334,6 +1449,19 @@ def demo_design(nx: int, ny: int, sf: float) -> dict:
     table = _preset_scan().get(key)
 
     if table:
+        # 快照优先：读 JSON 就能出图，页面上一次求解器都不碰（云端据此免于限流）。
+        # 读不到/对不上时下面的老路径照跑，保证向后兼容。
+        snap_all = _preset_snapshot()
+        _err = snap_all.get("_error") if isinstance(snap_all, dict) else None
+        if _err:
+            st.warning(f"预设快照读取失败（{_err}），本次回退到现场计算。")
+        snap = snap_all.get(key) if isinstance(snap_all, dict) else None
+        if isinstance(snap, dict):
+            try:
+                return _preset_res_from_snapshot(table, snap, nx, ny, sf)
+            except (KeyError, IndexError, TypeError, ValueError, OSError) as exc:
+                st.warning(f"预设快照不可用（{type(exc).__name__}: {exc}），"
+                           "本次回退到现场计算。")
         p = table["primary"]
         res = _make_res(p["theta4"], p["n_plies"], nx, ny, sf, "preset", True)
         _key = (int(round(nx)), int(round(ny)), round(sf, 2))
@@ -1413,6 +1541,22 @@ def buckling_mode(stack, nx: float, ny: float) -> dict:
     return {"lam": float(lam), "x": x, "y": y,
             "w_actual": w.T, "w11": w11,
             "m": int(m_dom) + 1, "n": int(n_dom) + 1}
+
+
+def _mode_from_snapshot(snap: dict) -> dict:
+    """把静态快照里的模态数据还原成 ``buckling_mode`` 的返回结构。
+
+    Z（归一化位移场）在快照里按 ``round(v, 6)`` 存，体积小一个量级，量纲与
+    归一化口径不变；基本模态 w11 是纯正弦，按同一条公式现算即可，不必占体积。
+    """
+    m = snap["mode"]
+    x = np.asarray(m["x"], float)
+    y = np.asarray(m["y"], float)
+    X, Y = np.meshgrid(x, y)
+    w11 = np.sin(np.pi * X / A_PLATE) * np.sin(np.pi * Y / B_PLATE)
+    return {"lam": float(m["lam"]), "x": x, "y": y,
+            "w_actual": np.asarray(m["Z"], float), "w11": w11,
+            "m": int(m["m"]), "n": int(m["n"])}
 
 
 # 绘图层
@@ -1830,7 +1974,17 @@ def _series_extrap_cached(stack_key: tuple, nx: float, ny: float) -> dict:
 
 
 def _series_extrap(res: dict, nx: float, ny: float) -> dict:
-    """级数解的收敛外推（缓存按铺层与载荷）。"""
+    """级数解的收敛外推（有静态快照时直接读快照，缓存按铺层与载荷）。
+
+    快照里的 series 就是同一铺层、同一载荷下 ``plate_series.converged_ncr``
+    的真实返回值（M = 16/24/32/40），所以云端不必再花几秒去解特征值。
+    """
+    snap = res.get("snapshot") or {}
+    series = snap.get("series")
+    if (isinstance(series, dict) and "ncr" in series
+            and abs(float(nx) - float(snap.get("nx", nx))) < 1e-9
+            and abs(float(ny) - float(snap.get("ny", ny))) < 1e-9):
+        return series
     return _series_extrap_cached(tuple(float(t) for t in res["stack"]),
                                  float(nx), float(ny))
 
@@ -2722,7 +2876,8 @@ if res["status"] == "infeasible":
     st.stop()
 
 # 结果区
-mode = buckling_mode(tuple(res["stack"]), res["nx"], res["ny"])
+mode = (_mode_from_snapshot(res["snapshot"]) if res.get("snapshot")
+        else buckling_mode(tuple(res["stack"]), res["nx"], res["ny"]))
 ncr, target, lam = res["ncr"], res["target"], res["lam"]
 
 tab1, tab2, tab3 = st.tabs(
